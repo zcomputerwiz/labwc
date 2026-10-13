@@ -28,6 +28,7 @@ server_protocols = [
 	'wlr-output-power-management-unstable-v1.xml',
 	'xx-zones-v1.xml',
 	'wex-window-v1.xml',
+	'pointer-warp-v1.xml',
 ]
 
 server_protos_src = []
