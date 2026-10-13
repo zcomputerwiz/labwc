@@ -323,6 +323,8 @@ struct xdg_toplevel_view {
 	struct wl_listener set_app_id;
 	struct wl_listener request_show_window_menu;
 	struct wl_listener new_popup;
+	struct wl_listener new_subsurface;
+	struct wl_list subsurface_trackers;
 };
 
 /* All criteria is applied in AND logic */

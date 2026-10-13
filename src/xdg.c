@@ -16,6 +16,7 @@
 #include "protocols/wex-window.h"
 #include "xx-zones-v1-protocol.h"
 #include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_subcompositor.h>
 #include "view-impl-common.h"
 #include "window-rules.h"
 #include "workspaces.h"
@@ -139,6 +140,83 @@ update_scene_buffer_alpha(struct wlr_scene_buffer *buffer, int sx, int sy, void 
 	} else {
 		wlr_scene_buffer_set_opacity(buffer, 1.0f);
 	}
+}
+
+struct lab_subsurface_tracker {
+	struct view *view;
+	struct wlr_subsurface *subsurface;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+	struct wl_listener new_subsurface;
+	struct wl_list link;
+};
+
+static void track_subsurface(struct view *view, struct wlr_subsurface *subsurface);
+
+static void
+subsurface_handle_commit(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct lab_subsurface_tracker *tracker =
+		wl_container_of(listener, tracker, commit);
+	wlr_scene_node_for_each_buffer(&tracker->view->scene_tree->node,
+		update_scene_buffer_alpha, NULL);
+}
+
+static void
+subsurface_handle_destroy(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct lab_subsurface_tracker *tracker =
+		wl_container_of(listener, tracker, destroy);
+	wl_list_remove(&tracker->commit.link);
+	wl_list_remove(&tracker->destroy.link);
+	wl_list_remove(&tracker->new_subsurface.link);
+	wl_list_remove(&tracker->link);
+	free(tracker);
+}
+
+static void
+subsurface_handle_new_subsurface(struct wl_listener *listener, void *data)
+{
+	struct lab_subsurface_tracker *tracker =
+		wl_container_of(listener, tracker, new_subsurface);
+	struct wlr_subsurface *subsurface = data;
+	track_subsurface(tracker->view, subsurface);
+}
+
+static void
+track_subsurface(struct view *view, struct wlr_subsurface *subsurface)
+{
+	if (!view || !subsurface) {
+		return;
+	}
+	struct xdg_toplevel_view *xdg_toplevel_view =
+		xdg_toplevel_view_from_view(view);
+
+	struct lab_subsurface_tracker *tracker = znew(*tracker);
+	tracker->view = view;
+	tracker->subsurface = subsurface;
+
+	tracker->commit.notify = subsurface_handle_commit;
+	wl_signal_add(&subsurface->surface->events.commit, &tracker->commit);
+
+	tracker->destroy.notify = subsurface_handle_destroy;
+	wl_signal_add(&subsurface->events.destroy, &tracker->destroy);
+
+	tracker->new_subsurface.notify = subsurface_handle_new_subsurface;
+	wl_signal_add(&subsurface->surface->events.new_subsurface, &tracker->new_subsurface);
+
+	wl_list_insert(&xdg_toplevel_view->subsurface_trackers, &tracker->link);
+}
+
+static void
+handle_toplevel_new_subsurface(struct wl_listener *listener, void *data)
+{
+	struct xdg_toplevel_view *xdg_toplevel_view =
+		wl_container_of(listener, xdg_toplevel_view, new_subsurface);
+	struct wlr_subsurface *subsurface = data;
+	track_subsurface(&xdg_toplevel_view->base, subsurface);
 }
 
 static void
@@ -357,7 +435,17 @@ handle_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&xdg_toplevel_view->set_app_id.link);
 	wl_list_remove(&xdg_toplevel_view->request_show_window_menu.link);
 	wl_list_remove(&xdg_toplevel_view->new_popup.link);
+	wl_list_remove(&xdg_toplevel_view->new_subsurface.link);
 	wl_list_remove(&view->commit.link);
+
+	struct lab_subsurface_tracker *tracker, *tmp_tracker;
+	wl_list_for_each_safe(tracker, tmp_tracker, &xdg_toplevel_view->subsurface_trackers, link) {
+		wl_list_remove(&tracker->commit.link);
+		wl_list_remove(&tracker->destroy.link);
+		wl_list_remove(&tracker->new_subsurface.link);
+		wl_list_remove(&tracker->link);
+		free(tracker);
+	}
 
 	if (view->pending_configure_timeout) {
 		wl_event_source_remove(view->pending_configure_timeout);
@@ -1039,6 +1127,11 @@ xdg_toplevel_new(struct wl_listener *listener, void *data)
 	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, set_app_id);
 	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, request_show_window_menu);
 	CONNECT_SIGNAL(xdg_surface, xdg_toplevel_view, new_popup);
+
+	wl_list_init(&xdg_toplevel_view->subsurface_trackers);
+	xdg_toplevel_view->new_subsurface.notify = handle_toplevel_new_subsurface;
+	wl_signal_add(&xdg_surface->surface->events.new_subsurface,
+		&xdg_toplevel_view->new_subsurface);
 
 	view_init(view);
 	wl_list_insert(&server->views, &view->link);
