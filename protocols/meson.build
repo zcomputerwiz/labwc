@@ -27,6 +27,7 @@ server_protocols = [
 	'wlr-input-inhibitor-unstable-v1.xml',
 	'wlr-output-power-management-unstable-v1.xml',
 	'xx-zones-v1.xml',
+	'wex-window-v1.xml',
 ]
 
 server_protos_src = []
