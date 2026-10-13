@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "config.h"
 #include "protocols/xx-zones.h"
+#include "protocols/wex-window.h"
 #include <signal.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -313,6 +314,10 @@ server_global_filter(const struct wl_client *client, const struct wl_global *glo
 	}
 #endif
 
+	if (server->wex_window_manager && global == server->wex_window_manager->global) {
+		return wex_client_is_privileged(client, server);
+	}
+
 	/* Do not allow security_context_manager_v1 to clients with a security context attached */
 	const struct wlr_security_context_v1_state *security_context =
 		wlr_security_context_manager_v1_lookup_client(
@@ -574,10 +579,14 @@ server_init(struct server *server)
 	 * | layer-shell       | background-layer | Yes        | swaybg
 	 */
 
+	server->desktop_tree = wlr_scene_tree_create(&server->scene->tree);
+	wlr_scene_node_lower_to_bottom(&server->desktop_tree->node);
 	server->view_tree_always_on_bottom = wlr_scene_tree_create(&server->scene->tree);
 	server->view_tree = wlr_scene_tree_create(&server->scene->tree);
 	server->view_tree_always_on_top = wlr_scene_tree_create(&server->scene->tree);
 	server->xdg_popup_tree = wlr_scene_tree_create(&server->scene->tree);
+	server->shell_tree = wlr_scene_tree_create(&server->scene->tree);
+	wlr_scene_node_place_above(&server->shell_tree->node, &server->xdg_popup_tree->node);
 #if HAVE_XWAYLAND
 	server->unmanaged_tree = wlr_scene_tree_create(&server->scene->tree);
 #endif
@@ -696,6 +705,7 @@ server_init(struct server *server)
 
 	layers_init(server);
 	lab_zone_manager_init(server);
+	wex_window_manager_init(server);
 
 	/* These get cleaned up automatically on display destroy */
 	struct wlr_xdg_foreign_registry *registry =
@@ -720,6 +730,17 @@ server_start(struct server *server)
 	if (!socket) {
 		wlr_log_errno(WLR_ERROR, "unable to open wayland socket");
 		exit(EXIT_FAILURE);
+	}
+
+	const char *wex_sock = getenv("WEX_SHELL_SOCKET");
+	if (!wex_sock) {
+		wex_sock = "wex-shell-0";
+	}
+	if (wl_display_add_socket(server->wl_display, wex_sock) == 0) {
+		server->wex_socket_name = strdup(wex_sock);
+		wlr_log(WLR_INFO, "opened privileged wex-shell socket: %s", wex_sock);
+	} else {
+		wlr_log_errno(WLR_ERROR, "unable to open wex-shell socket %s", wex_sock);
 	}
 
 	/*

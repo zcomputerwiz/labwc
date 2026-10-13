@@ -13,6 +13,7 @@
 #include "snap-constraints.h"
 #include "view.h"
 #include "protocols/xx-zones.h"
+#include "protocols/wex-window.h"
 #include "xx-zones-v1-protocol.h"
 #include "view-impl-common.h"
 #include "window-rules.h"
@@ -653,6 +654,9 @@ set_initial_position(struct view *view)
 	if (view->zone_positioned) {
 		return;
 	}
+	if (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP || view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL) {
+		return;
+	}
 	struct wlr_xdg_toplevel *parent_xdg_toplevel =
 		xdg_toplevel_from_view(view)->parent;
 
@@ -743,7 +747,9 @@ xdg_toplevel_view_map(struct view *view)
 	}
 
 	if (!view->been_mapped) {
-		if (view_wants_decorations(view)) {
+		if (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP || view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL) {
+			view_set_ssd_mode(view, LAB_SSD_MODE_NONE);
+		} else if (view_wants_decorations(view)) {
 			view_set_ssd_mode(view, LAB_SSD_MODE_FULL);
 		} else {
 			view_set_ssd_mode(view, LAB_SSD_MODE_NONE);

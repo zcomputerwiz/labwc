@@ -24,6 +24,7 @@
 #include "ssd.h"
 #include "view.h"
 #include "protocols/xx-zones.h"
+#include "protocols/wex-window.h"
 #include "window-rules.h"
 #include "wlr/util/log.h"
 #include "workspaces.h"
@@ -225,6 +226,9 @@ static bool
 matches_criteria(struct view *view, enum lab_view_criteria criteria)
 {
 	if (!view_is_focusable(view)) {
+		return false;
+	}
+	if (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP || view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL) {
 		return false;
 	}
 	if (criteria & LAB_VIEW_CRITERIA_CURRENT_WORKSPACE) {
@@ -2527,6 +2531,11 @@ view_destroy(struct view *view)
 	if (view->zone_item) {
 		lab_zone_item_on_view_destroy(view->zone_item);
 		view->zone_item = NULL;
+	}
+
+	if (view->wex_window) {
+		wex_window_on_view_destroy(view->wex_window);
+		view->wex_window = NULL;
 	}
 
 	if (server->grabbed_view == view) {

@@ -159,6 +159,7 @@ struct view_impl {
 };
 
 struct lab_zone_item;
+struct wex_window;
 
 struct view {
 	struct server *server;
@@ -279,6 +280,10 @@ struct view {
 
 	struct lab_zone_item *zone_item;
 	bool zone_positioned;
+	struct wex_window *wex_window;
+	uint32_t wex_layer;
+	uint32_t wex_exclusive_edge;
+	uint32_t wex_exclusive_size;
 
 	struct {
 		struct wl_signal new_app_id;

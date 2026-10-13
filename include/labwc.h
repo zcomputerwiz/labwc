@@ -225,6 +225,7 @@ struct seat {
 struct lab_data_buffer;
 struct workspace;
 struct lab_zone_manager;
+struct wex_window_manager;
 
 enum lab_cycle_dir {
 	LAB_CYCLE_DIR_NONE,
@@ -321,6 +322,10 @@ struct server {
 	struct wlr_scene_tree *menu_tree;
 
 	struct lab_zone_manager *zone_manager;
+	struct wex_window_manager *wex_window_manager;
+	struct wlr_scene_tree *desktop_tree;
+	struct wlr_scene_tree *shell_tree;
+	char *wex_socket_name;
 
 	/* Workspaces */
 	struct {

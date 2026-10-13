@@ -10,6 +10,7 @@
 #include "osd.h"
 #include "ssd.h"
 #include "view.h"
+#include "protocols/wex-window.h"
 #include "window-rules.h"
 #include "workspaces.h"
 #include "xwayland.h"
@@ -84,7 +85,7 @@ desktop_focus_view(struct view *view, bool raise)
 		seat_focus_surface(seat, view->surface);
 	}
 
-	if (raise) {
+	if (raise && view->wex_layer != WEX_WINDOW_V1_LAYER_DESKTOP && view->wex_layer != WEX_WINDOW_V1_LAYER_SHELL) {
 		view_move_to_front(view);
 	}
 }

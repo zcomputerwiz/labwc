@@ -18,6 +18,9 @@
 #include "common/mem.h"
 #include "config/rcxml.h"
 #include "layers.h"
+#include "view.h"
+#include "protocols/wex-window.h"
+#include "protocols/xx-zones.h"
 #include "labwc.h"
 #include "node.h"
 
@@ -69,6 +72,28 @@ layers_arrange(struct output *output)
 
 	apply_override(output, &usable_area);
 
+	struct view *v;
+	wl_list_for_each(v, &output->server->views, link) {
+		if (v->output == output && v->wex_layer == WEX_WINDOW_V1_LAYER_SHELL && v->wex_exclusive_size > 0) {
+			switch (v->wex_exclusive_edge) {
+			case WEX_WINDOW_V1_EDGE_TOP:
+				usable_area.y += v->wex_exclusive_size;
+				usable_area.height -= v->wex_exclusive_size;
+				break;
+			case WEX_WINDOW_V1_EDGE_BOTTOM:
+				usable_area.height -= v->wex_exclusive_size;
+				break;
+			case WEX_WINDOW_V1_EDGE_LEFT:
+				usable_area.x += v->wex_exclusive_size;
+				usable_area.width -= v->wex_exclusive_size;
+				break;
+			case WEX_WINDOW_V1_EDGE_RIGHT:
+				usable_area.width -= v->wex_exclusive_size;
+				break;
+			}
+		}
+	}
+
 	struct server *server = output->server;
 	struct wlr_scene_output *scene_output =
 		wlr_scene_get_scene_output(server->scene, output->wlr_output);
@@ -107,6 +132,14 @@ layers_arrange(struct output *output)
 	}
 
 	output->usable_area = usable_area;
+	if (server->zone_manager) {
+		struct lab_zone *z;
+		wl_list_for_each(z, &server->zone_manager->zones, link) {
+			if (z->output == output) {
+				lab_zone_update_output(z);
+			}
+		}
+	}
 }
 
 static void
