@@ -22,6 +22,33 @@ static const struct xx_zone_item_v1_interface zone_item_impl;
 static void zone_resource_destroy(struct wl_resource *resource);
 static void zone_item_resource_destroy(struct wl_resource *resource);
 
+static char *
+generate_zone_token(void)
+{
+	char token[37];
+	uint8_t rand_bytes[16];
+	FILE *f = fopen("/dev/urandom", "rb");
+	if (f) {
+		if (fread(rand_bytes, 1, 16, f) != 16) {
+			for (int i = 0; i < 16; i++) {
+				rand_bytes[i] = (uint8_t)rand();
+			}
+		}
+		fclose(f);
+	} else {
+		for (int i = 0; i < 16; i++) {
+			rand_bytes[i] = (uint8_t)rand();
+		}
+	}
+	snprintf(token, sizeof(token),
+		"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		rand_bytes[0], rand_bytes[1], rand_bytes[2], rand_bytes[3],
+		rand_bytes[4], rand_bytes[5], rand_bytes[6], rand_bytes[7],
+		rand_bytes[8], rand_bytes[9], rand_bytes[10], rand_bytes[11],
+		rand_bytes[12], rand_bytes[13], rand_bytes[14], rand_bytes[15]);
+	return xstrdup(token);
+}
+
 struct lab_zone *
 lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output)
 {
@@ -38,7 +65,7 @@ lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output)
 	zone = znew(*zone);
 	zone->manager = manager;
 	zone->output = output;
-	zone->handle = xstrdup(output->wlr_output->name);
+	zone->handle = generate_zone_token();
 	wl_list_init(&zone->resources);
 	wl_list_insert(manager->zones.prev, &zone->link);
 
@@ -140,19 +167,9 @@ handle_zone_manager_get_zone_from_handle(struct wl_client *client,
 	uint32_t version = wl_resource_get_version(resource);
 
 	if (!zone) {
-		/* If handle was invalid or unknown, fallback to default output */
-		struct output *output = output_nearest_to_cursor(manager->server);
-		if (!output && !wl_list_empty(&manager->server->outputs)) {
-			output = wl_container_of(manager->server->outputs.next, output, link);
-		}
-		if (output) {
-			zone = lab_zone_get_or_create(manager, output);
-		}
-	}
-
-	if (!zone) {
 		struct wl_resource *res = wl_resource_create(client,
 			&xx_zone_v1_interface, version, id);
+		wl_resource_set_implementation(res, &zone_impl, NULL, zone_resource_destroy);
 		xx_zone_v1_send_size(res, -1, -1);
 		xx_zone_v1_send_handle(res, "");
 		xx_zone_v1_send_done(res);
