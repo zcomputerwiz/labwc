@@ -158,6 +158,8 @@ struct view_impl {
 	pid_t (*get_pid)(struct view *view);
 };
 
+struct lab_zone_item;
+
 struct view {
 	struct server *server;
 	enum view_type type;
@@ -274,6 +276,9 @@ struct view {
 	struct wl_listener set_title;
 
 	struct foreign_toplevel *foreign_toplevel;
+
+	struct lab_zone_item *zone_item;
+	bool zone_positioned;
 
 	struct {
 		struct wl_signal new_app_id;

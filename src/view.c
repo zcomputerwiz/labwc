@@ -23,6 +23,7 @@
 #include "snap.h"
 #include "ssd.h"
 #include "view.h"
+#include "protocols/xx-zones.h"
 #include "window-rules.h"
 #include "wlr/util/log.h"
 #include "workspaces.h"
@@ -601,6 +602,9 @@ view_moved(struct view *view)
 	cursor_update_focus(view->server);
 	if (rc.resize_indicator && view->server->grabbed_view == view) {
 		resize_indicator_update(view);
+	}
+	if (view->zone_item) {
+		lab_zone_item_notify_moved(view->zone_item);
 	}
 }
 
@@ -2518,6 +2522,11 @@ view_destroy(struct view *view)
 	if (view->foreign_toplevel) {
 		foreign_toplevel_destroy(view->foreign_toplevel);
 		view->foreign_toplevel = NULL;
+	}
+
+	if (view->zone_item) {
+		lab_zone_item_on_view_destroy(view->zone_item);
+		view->zone_item = NULL;
 	}
 
 	if (server->grabbed_view == view) {

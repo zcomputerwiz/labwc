@@ -224,6 +224,7 @@ struct seat {
 
 struct lab_data_buffer;
 struct workspace;
+struct lab_zone_manager;
 
 enum lab_cycle_dir {
 	LAB_CYCLE_DIR_NONE,
@@ -318,6 +319,8 @@ struct server {
 #endif
 	/* Tree for built in menu */
 	struct wlr_scene_tree *menu_tree;
+
+	struct lab_zone_manager *zone_manager;
 
 	/* Workspaces */
 	struct {

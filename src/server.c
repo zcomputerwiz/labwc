@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _POSIX_C_SOURCE 200809L
 #include "config.h"
+#include "protocols/xx-zones.h"
 #include <signal.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -694,6 +695,7 @@ server_init(struct server *server)
 	server->tablet_manager = wlr_tablet_v2_create(server->wl_display);
 
 	layers_init(server);
+	lab_zone_manager_init(server);
 
 	/* These get cleaned up automatically on display destroy */
 	struct wlr_xdg_foreign_registry *registry =

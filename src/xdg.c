@@ -12,6 +12,8 @@
 #include "node.h"
 #include "snap-constraints.h"
 #include "view.h"
+#include "protocols/xx-zones.h"
+#include "xx-zones-v1-protocol.h"
 #include "view-impl-common.h"
 #include "window-rules.h"
 #include "workspaces.h"
@@ -622,9 +624,35 @@ lookup_view_by_xdg_toplevel(struct server *server,
 	return NULL;
 }
 
+struct view *
+lookup_view_by_xdg_toplevel_public(struct server *server,
+		struct wlr_xdg_toplevel *xdg_toplevel)
+{
+	return lookup_view_by_xdg_toplevel(server, xdg_toplevel);
+}
+
 static void
 set_initial_position(struct view *view)
 {
+	if (view->zone_item && view->zone_item->has_pending_pos && view->zone_item->zone) {
+		struct lab_zone_item *item = view->zone_item;
+		struct output *output = item->zone->output;
+		struct wlr_box out_box = { 0 };
+		wlr_output_layout_get_box(view->server->output_layout, output->wlr_output, &out_box);
+		struct border margin = ssd_get_margin(view->ssd);
+		view_set_output(view, output);
+		view->pending.x = out_box.x + item->pending_x + margin.left;
+		view->pending.y = out_box.y + item->pending_y + margin.top;
+		item->x = item->pending_x;
+		item->y = item->pending_y;
+		item->has_pos = true;
+		item->has_pending_pos = false;
+		xx_zone_item_v1_send_position(item->resource, item->x, item->y);
+		return;
+	}
+	if (view->zone_positioned) {
+		return;
+	}
 	struct wlr_xdg_toplevel *parent_xdg_toplevel =
 		xdg_toplevel_from_view(view)->parent;
 
