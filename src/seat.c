@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <strings.h>
 #include <wlr/backend/libinput.h>
+#include <wlr/backend/headless.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
@@ -419,6 +420,9 @@ seat_update_capabilities(struct seat *seat)
 			break;
 		}
 	}
+	if (wlr_backend_is_headless(seat->server->backend)) {
+		caps |= WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
+	}
 	wlr_seat_set_capabilities(seat->seat, caps);
 }
 
@@ -580,6 +584,7 @@ seat_init(struct server *server)
 	wl_list_init(&seat->tablet_pads);
 
 	input_handlers_init(seat);
+	seat_update_capabilities(seat);
 }
 
 void
