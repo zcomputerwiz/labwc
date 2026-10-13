@@ -169,6 +169,7 @@ main(int argc, char **argv)
 	const char *export_file = NULL;
 	int wait_secs = 2;
 	bool test_fail = false;
+	bool test_unknown_handle = false;
 	int fail_x = 2000, fail_y = 2000;
 
 	struct win_config win_configs[MAX_WINDOWS];
@@ -183,6 +184,8 @@ main(int argc, char **argv)
 			export_file = argv[++i];
 		} else if (strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
 			wait_secs = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--test-unknown-handle") == 0) {
+			test_unknown_handle = true;
 		} else if (strcmp(argv[i], "--test-fail") == 0 && i + 2 < argc) {
 			test_fail = true;
 			fail_x = atoi(argv[++i]);
@@ -202,7 +205,7 @@ main(int argc, char **argv)
 	}
 
 	/* Default window if none specified */
-	if (win_count == 0 && !test_fail) {
+	if (win_count == 0 && !test_fail && !test_unknown_handle) {
 		win_configs[0] = (struct win_config){
 			.x = 100, .y = 150, .width = 200, .height = 200, .color = 0xFFFF0000
 		};
@@ -223,7 +226,30 @@ main(int argc, char **argv)
 	struct zone_state zs = { 0 };
 	struct xx_zone_v1 *zone = NULL;
 
-	if (join_handle) {
+	if (test_unknown_handle) {
+		printf("[zones-client] testing get_zone_from_handle with unknown handle\n");
+		zone = xx_zone_manager_v1_get_zone_from_handle(ctx.zone_manager, "unknown-invalid-token");
+		if (!zone) {
+			fprintf(stderr, "failed to get zone for unknown handle\n");
+			wex_context_finish(&ctx);
+			return 1;
+		}
+		xx_zone_v1_add_listener(zone, &zone_listener, &zs);
+		wl_display_roundtrip(ctx.display);
+		if (zs.width < 0 && zs.height < 0 && strlen(zs.handle) == 0) {
+			printf("[zones-client] SUCCESS: received invalid size %dx%d and empty handle for unknown handle\n",
+				zs.width, zs.height);
+			xx_zone_v1_destroy(zone);
+			wex_context_finish(&ctx);
+			return 0;
+		} else {
+			fprintf(stderr, "ERROR: expected invalid size and empty handle, got size %dx%d handle '%s'\n",
+				zs.width, zs.height, zs.handle);
+			xx_zone_v1_destroy(zone);
+			wex_context_finish(&ctx);
+			return 1;
+		}
+	} else if (join_handle) {
 		printf("[zones-client] joining zone via handle '%s'\n", join_handle);
 		zone = xx_zone_manager_v1_get_zone_from_handle(ctx.zone_manager, join_handle);
 	} else {

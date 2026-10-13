@@ -8,27 +8,38 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
+#include "virtual-keyboard-unstable-v1-client-protocol.h"
 
 struct wex_context {
 	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_compositor *compositor;
+	struct wl_subcompositor *subcompositor;
 	struct wl_shm *shm;
 	struct xdg_wm_base *wm_base;
 	struct wl_seat *seat;
 	struct wl_pointer *pointer;
+	struct wl_keyboard *keyboard;
 	struct zxdg_decoration_manager_v1 *deco_manager;
 
 	struct xx_zone_manager_v1 *zone_manager;
 	struct wex_window_manager_v1 *wex_window_manager;
 	struct wp_alpha_modifier_v1 *alpha_modifier;
 	struct wp_pointer_warp_v1 *pointer_warp;
+	struct zwlr_virtual_pointer_manager_v1 *virtual_pointer_manager;
+	struct zwp_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
 
 	uint32_t last_enter_serial;
 	int pointer_x;
 	int pointer_y;
 	bool pointer_entered;
 	bool pointer_motion_received;
+	struct wl_surface *pointer_focus_surface;
+	struct wl_surface *keyboard_focus_surface;
+	uint32_t last_button;
+	uint32_t last_button_state;
+	int button_event_count;
 };
 
 struct wex_buffer {

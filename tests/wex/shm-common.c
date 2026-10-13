@@ -21,9 +21,11 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
 		uint32_t serial, struct wl_surface *surface,
 		wl_fixed_t sx, wl_fixed_t sy)
 {
+	(void)pointer;
 	struct wex_context *ctx = data;
 	ctx->last_enter_serial = serial;
 	ctx->pointer_entered = true;
+	ctx->pointer_focus_surface = surface;
 	ctx->pointer_x = wl_fixed_to_int(sx);
 	ctx->pointer_y = wl_fixed_to_int(sy);
 }
@@ -34,9 +36,11 @@ pointer_handle_leave(void *data, struct wl_pointer *pointer,
 {
 	(void)pointer;
 	(void)serial;
-	(void)surface;
 	struct wex_context *ctx = data;
 	ctx->pointer_entered = false;
+	if (ctx->pointer_focus_surface == surface) {
+		ctx->pointer_focus_surface = NULL;
+	}
 }
 
 static void
@@ -55,12 +59,13 @@ static void
 pointer_handle_button(void *data, struct wl_pointer *pointer,
 		uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
 {
-	(void)data;
 	(void)pointer;
 	(void)serial;
 	(void)time;
-	(void)button;
-	(void)state;
+	struct wex_context *ctx = data;
+	ctx->last_button = button;
+	ctx->last_button_state = state;
+	ctx->button_event_count++;
 }
 
 static void
@@ -120,6 +125,85 @@ static const struct wl_pointer_listener pointer_listener = {
 };
 
 static void
+keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
+		uint32_t format, int32_t fd, uint32_t size)
+{
+	(void)data;
+	(void)keyboard;
+	(void)format;
+	(void)size;
+	close(fd);
+}
+
+static void
+keyboard_handle_enter(void *data, struct wl_keyboard *keyboard,
+		uint32_t serial, struct wl_surface *surface, struct wl_array *keys)
+{
+	(void)keyboard;
+	(void)serial;
+	(void)keys;
+	struct wex_context *ctx = data;
+	ctx->keyboard_focus_surface = surface;
+}
+
+static void
+keyboard_handle_leave(void *data, struct wl_keyboard *keyboard,
+		uint32_t serial, struct wl_surface *surface)
+{
+	(void)keyboard;
+	(void)serial;
+	struct wex_context *ctx = data;
+	if (ctx->keyboard_focus_surface == surface) {
+		ctx->keyboard_focus_surface = NULL;
+	}
+}
+
+static void
+keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
+		uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
+{
+	(void)data;
+	(void)keyboard;
+	(void)serial;
+	(void)time;
+	(void)key;
+	(void)state;
+}
+
+static void
+keyboard_handle_modifiers(void *data, struct wl_keyboard *keyboard,
+		uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched,
+		uint32_t mods_locked, uint32_t group)
+{
+	(void)data;
+	(void)keyboard;
+	(void)serial;
+	(void)mods_depressed;
+	(void)mods_latched;
+	(void)mods_locked;
+	(void)group;
+}
+
+static void
+keyboard_handle_repeat_info(void *data, struct wl_keyboard *keyboard,
+		int32_t rate, int32_t delay)
+{
+	(void)data;
+	(void)keyboard;
+	(void)rate;
+	(void)delay;
+}
+
+static const struct wl_keyboard_listener keyboard_listener = {
+	.keymap = keyboard_handle_keymap,
+	.enter = keyboard_handle_enter,
+	.leave = keyboard_handle_leave,
+	.key = keyboard_handle_key,
+	.modifiers = keyboard_handle_modifiers,
+	.repeat_info = keyboard_handle_repeat_info,
+};
+
+static void
 seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t capabilities)
 {
 	struct wex_context *ctx = data;
@@ -129,6 +213,14 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t capabilities
 	} else if (!(capabilities & WL_SEAT_CAPABILITY_POINTER) && ctx->pointer) {
 		wl_pointer_destroy(ctx->pointer);
 		ctx->pointer = NULL;
+	}
+
+	if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && !ctx->keyboard) {
+		ctx->keyboard = wl_seat_get_keyboard(seat);
+		wl_keyboard_add_listener(ctx->keyboard, &keyboard_listener, ctx);
+	} else if (!(capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && ctx->keyboard) {
+		wl_keyboard_destroy(ctx->keyboard);
+		ctx->keyboard = NULL;
 	}
 }
 
@@ -191,6 +283,15 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, wp_pointer_warp_v1_interface.name) == 0) {
 		ctx->pointer_warp = wl_registry_bind(registry, name,
 			&wp_pointer_warp_v1_interface, 1);
+	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
+		ctx->subcompositor = wl_registry_bind(registry, name,
+			&wl_subcompositor_interface, 1);
+	} else if (strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0) {
+		ctx->virtual_pointer_manager = wl_registry_bind(registry, name,
+			&zwlr_virtual_pointer_manager_v1_interface, 1);
+	} else if (strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name) == 0) {
+		ctx->virtual_keyboard_manager = wl_registry_bind(registry, name,
+			&zwp_virtual_keyboard_manager_v1_interface, 1);
 	}
 }
 
@@ -246,6 +347,9 @@ wex_context_finish(struct wex_context *ctx)
 	}
 	if (ctx->pointer) {
 		wl_pointer_destroy(ctx->pointer);
+	}
+	if (ctx->keyboard) {
+		wl_keyboard_destroy(ctx->keyboard);
 	}
 	if (ctx->seat) {
 		wl_seat_destroy(ctx->seat);

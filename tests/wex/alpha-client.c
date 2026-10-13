@@ -29,12 +29,15 @@ main(int argc, char **argv)
 
 	const char *socket_name = NULL;
 	int wait_secs = 2;
+	bool test_subsurface = false;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
 			socket_name = argv[++i];
 		} else if (strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
 			wait_secs = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--subsurface") == 0) {
+			test_subsurface = true;
 		}
 	}
 
@@ -77,7 +80,8 @@ main(int argc, char **argv)
 	}
 	wl_surface_commit(bg_win.surface);
 
-	if (!wex_window_init(&fg_win, &ctx, "AlphaFG", 400, 300, 0xFFFF0000)) {
+	uint32_t fg_color = test_subsurface ? 0xFF00FF00 : 0xFFFF0000;
+	if (!wex_window_init(&fg_win, &ctx, "AlphaFG", 400, 300, fg_color)) {
 		fprintf(stderr, "failed to create fg_win\n");
 		wex_window_finish(&bg_win);
 		wex_context_finish(&ctx);
@@ -89,24 +93,41 @@ main(int argc, char **argv)
 		xx_zone_item_v1_set_position(fg_win.zone_item, 100, 100);
 	}
 
-	struct wp_alpha_modifier_surface_v1 *alpha_surf =
-		wp_alpha_modifier_v1_get_surface(ctx.alpha_modifier, fg_win.surface);
-	if (!alpha_surf) {
-		fprintf(stderr, "failed to get alpha modifier surface\n");
-		return 1;
+	struct wp_alpha_modifier_surface_v1 *alpha_surf = NULL;
+	struct wl_surface *sub_surface = NULL;
+	struct wl_subsurface *subsurface = NULL;
+	struct wex_buffer sub_buf;
+	uint32_t multiplier = UINT32_MAX / 2;
+
+	if (test_subsurface) {
+		if (!ctx.subcompositor) {
+			fprintf(stderr, "wl_subcompositor not available\n");
+			return 1;
+		}
+		sub_surface = wl_compositor_create_surface(ctx.compositor);
+		subsurface = wl_subcompositor_get_subsurface(ctx.subcompositor, sub_surface, fg_win.surface);
+		wl_subsurface_set_position(subsurface, 50, 50);
+		wl_subsurface_set_desync(subsurface);
+		wex_buffer_create(&ctx, &sub_buf, 200, 200, 0xFFFF0000);
+		alpha_surf = wp_alpha_modifier_v1_get_surface(ctx.alpha_modifier, sub_surface);
+		wp_alpha_modifier_surface_v1_set_multiplier(alpha_surf, multiplier);
+		printf("[alpha-client] set subsurface alpha multiplier to 50%% (0x%08x)\n", multiplier);
+	} else {
+		alpha_surf = wp_alpha_modifier_v1_get_surface(ctx.alpha_modifier, fg_win.surface);
+		wp_alpha_modifier_surface_v1_set_multiplier(alpha_surf, multiplier);
+		printf("[alpha-client] set alpha multiplier to 50%% (0x%08x)\n", multiplier);
 	}
 
-	/* Set 50% alpha multiplier (UINT32_MAX / 2) */
-	uint32_t multiplier = UINT32_MAX / 2;
-	wp_alpha_modifier_surface_v1_set_multiplier(alpha_surf, multiplier);
-	printf("[alpha-client] set alpha multiplier to 50%% (0x%08x)\n", multiplier);
-
 	wl_surface_commit(fg_win.surface);
-
 	wl_display_roundtrip(ctx.display);
 
 	wex_window_commit_buffer(&bg_win);
 	wex_window_commit_buffer(&fg_win);
+	if (test_subsurface) {
+		wl_surface_attach(sub_surface, sub_buf.wl_buffer, 0, 0);
+		wl_surface_damage_buffer(sub_surface, 0, 0, 200, 200);
+		wl_surface_commit(sub_surface);
+	}
 	wl_display_roundtrip(ctx.display);
 
 	printf("[alpha-client] displayed alpha window, waiting %d seconds\n", wait_secs);
@@ -124,7 +145,14 @@ main(int argc, char **argv)
 		elapsed++;
 	}
 
-	wp_alpha_modifier_surface_v1_destroy(alpha_surf);
+	if (test_subsurface) {
+		wp_alpha_modifier_surface_v1_destroy(alpha_surf);
+		wex_buffer_destroy(&sub_buf);
+		wl_subsurface_destroy(subsurface);
+		wl_surface_destroy(sub_surface);
+	} else {
+		wp_alpha_modifier_surface_v1_destroy(alpha_surf);
+	}
 	wex_window_finish(&fg_win);
 	wex_window_finish(&bg_win);
 	if (zone) {

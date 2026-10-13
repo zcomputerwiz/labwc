@@ -88,9 +88,28 @@ def check_pixel(image_path, x, y, expected_hex, tolerance=5):
     print(f"PASS: Pixel at ({x},{y}) matches {expected} (got {c})")
     return True
 
+def compare_images(image1_path, image2_path, tolerance=0):
+    img1 = Image.open(image1_path).convert('RGB')
+    img2 = Image.open(image2_path).convert('RGB')
+    if img1.size != img2.size:
+        print(f"FAIL: Image sizes differ: {img1.size} vs {img2.size}")
+        return False
+    diff_count = 0
+    for y in range(img1.height):
+        for x in range(img1.width):
+            c1 = img1.getpixel((x, y))
+            c2 = img2.getpixel((x, y))
+            if color_dist(c1, c2) > tolerance:
+                diff_count += 1
+    if diff_count > 0:
+        print(f"FAIL: Images differ ({diff_count} pixels differ with tol={tolerance})")
+        return False
+    print(f"PASS: Images match completely (tol={tolerance})")
+    return True
+
 def main():
     if len(sys.argv) < 3:
-        print("Usage: verify.py <check-rect|check-alpha|check-pixel> <img_path> [args...]")
+        print("Usage: verify.py <check-rect|check-alpha|check-pixel|compare-images> <img_path> [args...]")
         sys.exit(1)
         
     cmd = sys.argv[1]
@@ -120,6 +139,10 @@ def main():
         col = sys.argv[5]
         tol = int(sys.argv[6]) if len(sys.argv) > 6 else 5
         res = check_pixel(img, x, y, col, tol)
+    elif cmd == "compare-images":
+        img2 = sys.argv[3]
+        tol = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+        res = compare_images(img, img2, tol)
     else:
         print(f"Unknown command {cmd}")
         sys.exit(1)
@@ -128,3 +151,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

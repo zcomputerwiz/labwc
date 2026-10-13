@@ -2,6 +2,7 @@ zones-client
 stack-client
 alpha-client
 warp-client
+policy-client
 *.o
 *-protocol.c
 *-protocol.h

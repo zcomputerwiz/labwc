@@ -138,6 +138,9 @@ wait "$CLIENT_PID"
 run_check "Zone Join Handle Window at (700, 100) 200x200 Green" \
     python3 "$SCRIPT_DIR/verify.py" check-rect "$OUT_DIR/02_zones_join_handle.png" 700 100 200 200 00FF00
 
+run_check "xx-zones-v1 Unknown Handle Rejection" \
+    "$SCRIPT_DIR/zones-client" --test-unknown-handle
+
 # TEST 4: wex-window-v1 Layering
 echo "Testing wex-window-v1 layers (Desktop, Normal, Topmost, Shell)..."
 "$SCRIPT_DIR/stack-client" --scenario layers --wait 3 &
@@ -201,9 +204,79 @@ wait "$CLIENT_PID"
 run_check "wp_alpha_modifier_v1 renders at 50% opacity (blended R=255, G=128, B=128)" \
     python3 "$SCRIPT_DIR/verify.py" check-alpha "$OUT_DIR/06_alpha_50.png" 100 100 200 200 255 128 128 12
 
+echo "Testing wp_alpha_modifier_v1 subsurface 50% opacity..."
+"$SCRIPT_DIR/alpha-client" --subsurface --wait 3 &
+CLIENT_PID=$!
+sleep 1
+grim "$OUT_DIR/06b_subsurface_alpha_50.png"
+wait "$CLIENT_PID"
+
+run_check "wp_alpha_modifier_v1 subsurface at 50% opacity (blended Yellow R=128, G=128, B=0)" \
+    python3 "$SCRIPT_DIR/verify.py" check-alpha "$OUT_DIR/06b_subsurface_alpha_50.png" 150 150 200 200 128 128 0 12
+
 # TEST 9: wp_pointer_warp_v1
 run_check "wp_pointer_warp_v1 repositions pointer and emits motion event" \
     "$SCRIPT_DIR/warp-client" --x 350 --y 250
+
+# TEST 10: wex focus and stacking policy (Test 1)
+BARRIER_DIR="$XDG_RUNTIME_DIR/barriers"
+mkdir -p "$BARRIER_DIR"
+rm -f "$BARRIER_DIR"/*
+
+echo "Testing wex policy Test 1 (click without focus steal; activate raises)..."
+"$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 1 --barrier-dir "$BARRIER_DIR" &
+CLIENT_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b1_clicked" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/07_click_no_steal.png"
+touch "$BARRIER_DIR/b1_continue"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b1_activated" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/08_activate_raised.png"
+touch "$BARRIER_DIR/b1_finish"
+
+wait "$CLIENT_PID"
+
+run_check "Policy 1: Clicked Window A does not steal focus, Window B remains above Window A at (175, 175) Blue" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/07_click_no_steal.png" 175 175 0000FF
+
+run_check "Policy 1: activate(A) raises Window A above Window B at (175, 175) Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/08_activate_raised.png" 175 175 FF0000
+
+# TEST 11: wex map unfocused policy (Test 2)
+run_check "Policy 2: Newly mapped wex window has no keyboard focus until activate()" \
+    "$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 2 --wait 0
+
+# TEST 12: wex close unfocused policy (Test 3)
+run_check "Policy 3: Closing focused wex window defocuses rather than stealing focus to another wex window" \
+    "$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 3 --wait 0
+
+# TEST 13: wex keybindings ignored (Test 4)
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex policy Test 4 (keybinds W-a, A-Left, A-Space ignored on wex window)..."
+"$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 4 --barrier-dir "$BARRIER_DIR" &
+CLIENT_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b4_before" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/09_wex_keybinds_before.png"
+touch "$BARRIER_DIR/b4_continue"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b4_after" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/10_wex_keybinds_after.png"
+touch "$BARRIER_DIR/b4_finish"
+
+wait "$CLIENT_PID"
+
+run_check "Policy 4: Keybinds ignored on wex window (geometry unchanged, no menu screenshot compare)" \
+    python3 "$SCRIPT_DIR/verify.py" compare-images "$OUT_DIR/09_wex_keybinds_before.png" "$OUT_DIR/10_wex_keybinds_after.png"
+
+# TEST 14: wex window switcher ignored (Test 5)
+run_check "Policy 5: Window switcher (A-Tab) does not select wex window" \
+    "$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 5 --wait 0
+
+# TEST 15: non-wex client retains stock behavior (Test 7)
+run_check "Policy 7: Non-wex client retains stock click-to-focus and Super+A maximize" \
+    "$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 7 --wait 0
 
 echo "=========================================================="
 echo " ALL TESTS PASSED SUCCESSFULLY ($TESTS_PASSED/$TESTS_PASSED)"

@@ -2,7 +2,7 @@
 
 CC ?= gcc
 CFLAGS ?= -Wall -Wextra -O2 -I.
-LIBS = -lwayland-client -lrt
+LIBS = -lwayland-client -lrt -lxkbcommon
 
 WAYLAND_SCANNER ?= wayland-scanner
 WAYLAND_PROTOCOLS_DIR ?= /usr/share/wayland-protocols
@@ -14,7 +14,9 @@ PROTO_GEN_C = \
 	pointer-warp-v1-protocol.c \
 	alpha-modifier-v1-protocol.c \
 	xdg-shell-protocol.c \
-	xdg-decoration-unstable-v1-protocol.c
+	xdg-decoration-unstable-v1-protocol.c \
+	wlr-virtual-pointer-unstable-v1-protocol.c \
+	virtual-keyboard-unstable-v1-protocol.c
 
 PROTO_GEN_H = \
 	xx-zones-v1-client-protocol.h \
@@ -22,12 +24,14 @@ PROTO_GEN_H = \
 	pointer-warp-v1-client-protocol.h \
 	alpha-modifier-v1-client-protocol.h \
 	xdg-shell-client-protocol.h \
-	xdg-decoration-unstable-v1-client-protocol.h
+	xdg-decoration-unstable-v1-client-protocol.h \
+	wlr-virtual-pointer-unstable-v1-client-protocol.h \
+	virtual-keyboard-unstable-v1-client-protocol.h
 
 PROTO_OBJS = $(PROTO_GEN_C:.c=.o)
 COMMON_OBJS = shm-common.o $(PROTO_OBJS)
 
-TARGETS = zones-client stack-client alpha-client warp-client
+TARGETS = zones-client stack-client alpha-client warp-client policy-client
 
 all: $(TARGETS)
 
@@ -82,7 +86,22 @@ stack-client: stack-client.o $(COMMON_OBJS)
 alpha-client: alpha-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
+wlr-virtual-pointer-unstable-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/wlr-virtual-pointer-unstable-v1.xml
+	$(WAYLAND_SCANNER) client-header $< $@
+
+wlr-virtual-pointer-unstable-v1-protocol.c: $(TOP_PROTOCOLS_DIR)/wlr-virtual-pointer-unstable-v1.xml
+	$(WAYLAND_SCANNER) private-code $< $@
+
+virtual-keyboard-unstable-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/virtual-keyboard-unstable-v1.xml
+	$(WAYLAND_SCANNER) client-header $< $@
+
+virtual-keyboard-unstable-v1-protocol.c: $(TOP_PROTOCOLS_DIR)/virtual-keyboard-unstable-v1.xml
+	$(WAYLAND_SCANNER) private-code $< $@
+
 warp-client: warp-client.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+
+policy-client: policy-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 clean:
