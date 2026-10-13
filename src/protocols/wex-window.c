@@ -216,6 +216,10 @@ handle_wex_window_activate(struct wl_client *client,
 		return;
 	}
 
+	if (win->view->minimized) {
+		view_minimize(win->view, false);
+	}
+
 	wlr_scene_node_raise_to_top(&win->view->scene_tree->node);
 
 	if (win->view->surface) {
