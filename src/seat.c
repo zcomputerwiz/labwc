@@ -420,7 +420,7 @@ seat_update_capabilities(struct seat *seat)
 			break;
 		}
 	}
-	if (wlr_backend_is_headless(seat->server->backend)) {
+	if (seat->server->headless.backend || wl_list_empty(&seat->inputs)) {
 		caps |= WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	}
 	wlr_seat_set_capabilities(seat->seat, caps);
