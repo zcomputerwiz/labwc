@@ -15,6 +15,7 @@
 #include "protocols/xx-zones.h"
 #include "protocols/wex-window.h"
 #include "xx-zones-v1-protocol.h"
+#include <wlr/types/wlr_alpha_modifier_v1.h>
 #include "view-impl-common.h"
 #include "window-rules.h"
 #include "workspaces.h"
@@ -123,12 +124,32 @@ do_late_positioning(struct view *view)
 }
 
 static void
+update_scene_buffer_alpha(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
+{
+	(void)sx; (void)sy; (void)data;
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(buffer);
+	if (!scene_surface || !scene_surface->surface) {
+		return;
+	}
+	const struct wlr_alpha_modifier_surface_v1_state *state =
+		wlr_alpha_modifier_v1_get_surface_state(scene_surface->surface);
+	if (state) {
+		wlr_scene_buffer_set_opacity(buffer, (float)state->multiplier);
+	} else {
+		wlr_scene_buffer_set_opacity(buffer, 1.0f);
+	}
+}
+
+static void
 handle_commit(struct wl_listener *listener, void *data)
 {
 	struct view *view = wl_container_of(listener, view, commit);
 	struct wlr_xdg_surface *xdg_surface = xdg_surface_from_view(view);
 	struct wlr_xdg_toplevel *toplevel = xdg_toplevel_from_view(view);
 	assert(view->surface);
+
+	wlr_scene_node_for_each_buffer(&view->scene_tree->node, update_scene_buffer_alpha, NULL);
 
 	if (xdg_surface->initial_commit) {
 		wlr_log(WLR_DEBUG, "scheduling configure");

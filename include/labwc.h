@@ -226,6 +226,8 @@ struct lab_data_buffer;
 struct workspace;
 struct lab_zone_manager;
 struct wex_window_manager;
+struct lab_pointer_warp_manager;
+struct wlr_alpha_modifier_v1;
 
 enum lab_cycle_dir {
 	LAB_CYCLE_DIR_NONE,
@@ -326,6 +328,8 @@ struct server {
 	struct wlr_scene_tree *desktop_tree;
 	struct wlr_scene_tree *shell_tree;
 	char *wex_socket_name;
+	struct wlr_alpha_modifier_v1 *alpha_modifier;
+	struct lab_pointer_warp_manager *pointer_warp;
 
 	/* Workspaces */
 	struct {

@@ -3,6 +3,8 @@
 #include "config.h"
 #include "protocols/xx-zones.h"
 #include "protocols/wex-window.h"
+#include "protocols/pointer-warp.h"
+#include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -706,6 +708,8 @@ server_init(struct server *server)
 	layers_init(server);
 	lab_zone_manager_init(server);
 	wex_window_manager_init(server);
+	server->alpha_modifier = wlr_alpha_modifier_v1_create(server->wl_display);
+	lab_pointer_warp_manager_init(server);
 
 	/* These get cleaned up automatically on display destroy */
 	struct wlr_xdg_foreign_registry *registry =
