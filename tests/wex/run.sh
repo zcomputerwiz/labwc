@@ -102,6 +102,10 @@ run_check() {
 run_check "Socket Isolation (wex_window_manager_v1 privileged)" \
     "$SCRIPT_DIR/stack-client" --scenario check-sockets --socket wex-shell-0 --normal-socket wayland-0
 
+# Version 2 keeps the v1 clients above and below unchanged.
+run_check "Shared handles across three clients and layer/lifetime invariants" \
+    python3 "$SCRIPT_DIR/check-handles.py"
+
 # TEST 2: xx-zones-v1 Window Placement
 echo "Testing xx-zones-v1 explicit placement and centering bypass..."
 "$SCRIPT_DIR/zones-client" \

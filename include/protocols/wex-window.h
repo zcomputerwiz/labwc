@@ -22,6 +22,7 @@ struct wex_window {
 	struct wex_window_manager *manager;
 	struct view *view;
 	struct wl_resource *resource;
+	char handle[33];
 	uint32_t layer;
 	uint32_t exclusive_edge;
 	uint32_t exclusive_size;

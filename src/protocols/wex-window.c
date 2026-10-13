@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -17,6 +18,20 @@
 
 static const struct wex_window_manager_v1_interface wex_manager_impl;
 static const struct wex_window_v1_interface wex_window_impl;
+
+static bool
+generate_window_handle(char handle[33])
+{
+    unsigned char bytes[16];
+    FILE *file = fopen("/dev/urandom", "rb");
+    if (!file) return false;
+    bool ok = fread(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
+    fclose(file);
+    if (!ok) return false;
+    for (unsigned i = 0; i < sizeof(bytes); ++i)
+        snprintf(handle + 2 * i, 3, "%02x", bytes[i]);
+    return true;
+}
 
 static void wex_window_resource_destroy(struct wl_resource *resource);
 
@@ -72,7 +87,12 @@ handle_manager_get_window(struct wl_client *client,
 
 	uint32_t version = wl_resource_get_version(resource);
 	struct wex_window *win = znew(*win);
-	win->manager = manager;
+	if (!generate_window_handle(win->handle)) {
+        free(win);
+        wl_client_post_implementation_error(client, "cannot generate window handle");
+        return;
+    }
+    win->manager = manager;
 	win->view = view;
 	view->wex_window = win;
 	view_set_ssd_mode(view, LAB_SSD_MODE_NONE);
@@ -81,6 +101,7 @@ handle_manager_get_window(struct wl_client *client,
 		&wex_window_v1_interface, version, id);
 	wl_resource_set_implementation(win->resource, &wex_window_impl, win, wex_window_resource_destroy);
 	wl_list_insert(manager->windows.prev, &win->link);
+    if (version >= 2) wex_window_v1_send_handle(win->resource, win->handle);
 }
 
 static const struct wex_window_manager_v1_interface wex_manager_impl = {
@@ -102,7 +123,9 @@ handle_wex_window_place_above(struct wl_client *client,
 	struct wex_window *win = wl_resource_get_user_data(resource);
 	struct wex_window *sibling = wl_resource_get_user_data(sibling_resource);
 
-	if (!win || !sibling || !win->view || !sibling->view) {
+	if (!win || !sibling || win == sibling || !win->view || !sibling->view
+        || win->layer != sibling->layer
+        || win->view->scene_tree->node.parent != sibling->view->scene_tree->node.parent) {
 		return;
 	}
 
@@ -120,7 +143,9 @@ handle_wex_window_place_below(struct wl_client *client,
 	struct wex_window *win = wl_resource_get_user_data(resource);
 	struct wex_window *sibling = wl_resource_get_user_data(sibling_resource);
 
-	if (!win || !sibling || !win->view || !sibling->view) {
+	if (!win || !sibling || win == sibling || !win->view || !sibling->view
+        || win->layer != sibling->layer
+        || win->view->scene_tree->node.parent != sibling->view->scene_tree->node.parent) {
 		return;
 	}
 
@@ -225,6 +250,34 @@ handle_wex_window_activate(struct wl_client *client,
 	win->manager->server->active_view = win->view;
 }
 
+static struct wex_window *
+find_window_handle(struct wex_window_manager *manager, const char *handle)
+{
+    struct wex_window *win;
+    wl_list_for_each(win, &manager->windows, link) {
+        if (win->view && !strcmp(win->handle, handle)) return win;
+    }
+    return NULL;
+}
+
+static void
+handle_wex_window_place_above_handle(struct wl_client *client,
+        struct wl_resource *resource, const char *handle)
+{
+    struct wex_window *win = wl_resource_get_user_data(resource);
+    struct wex_window *sibling = find_window_handle(win->manager, handle);
+    if (sibling) handle_wex_window_place_above(client, resource, sibling->resource);
+}
+
+static void
+handle_wex_window_place_below_handle(struct wl_client *client,
+        struct wl_resource *resource, const char *handle)
+{
+    struct wex_window *win = wl_resource_get_user_data(resource);
+    struct wex_window *sibling = find_window_handle(win->manager, handle);
+    if (sibling) handle_wex_window_place_below(client, resource, sibling->resource);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -233,6 +286,8 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.set_layer = handle_wex_window_set_layer,
 	.set_exclusive_edge = handle_wex_window_set_exclusive_edge,
 	.activate = handle_wex_window_activate,
+    .place_above_handle = handle_wex_window_place_above_handle,
+    .place_below_handle = handle_wex_window_place_below_handle,
 };
 
 static void
@@ -293,7 +348,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 1, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 2, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
