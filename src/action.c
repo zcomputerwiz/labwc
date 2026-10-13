@@ -855,6 +855,47 @@ warp_cursor(struct view *view, struct output *output, const char *to, const char
 	cursor_update_focus(output->server);
 }
 
+static bool
+action_modifies_view(enum action_type type)
+{
+	switch (type) {
+	case ACTION_TYPE_MOVE_TO_EDGE:
+	case ACTION_TYPE_TOGGLE_SNAP_TO_EDGE:
+	case ACTION_TYPE_SNAP_TO_EDGE:
+	case ACTION_TYPE_GROW_TO_EDGE:
+	case ACTION_TYPE_SHRINK_TO_EDGE:
+	case ACTION_TYPE_SHOW_MENU:
+	case ACTION_TYPE_TOGGLE_MAXIMIZE:
+	case ACTION_TYPE_MAXIMIZE:
+	case ACTION_TYPE_UNMAXIMIZE:
+	case ACTION_TYPE_TOGGLE_FULLSCREEN:
+	case ACTION_TYPE_SET_DECORATIONS:
+	case ACTION_TYPE_TOGGLE_DECORATIONS:
+	case ACTION_TYPE_TOGGLE_ALWAYS_ON_TOP:
+	case ACTION_TYPE_TOGGLE_ALWAYS_ON_BOTTOM:
+	case ACTION_TYPE_TOGGLE_OMNIPRESENT:
+	case ACTION_TYPE_FOCUS:
+	case ACTION_TYPE_ICONIFY:
+	case ACTION_TYPE_MOVE:
+	case ACTION_TYPE_RAISE:
+	case ACTION_TYPE_LOWER:
+	case ACTION_TYPE_RESIZE:
+	case ACTION_TYPE_RESIZE_RELATIVE:
+	case ACTION_TYPE_MOVETO:
+	case ACTION_TYPE_RESIZETO:
+	case ACTION_TYPE_MOVE_RELATIVE:
+	case ACTION_TYPE_MOVETO_CURSOR:
+	case ACTION_TYPE_SEND_TO_DESKTOP:
+	case ACTION_TYPE_MOVE_TO_OUTPUT:
+	case ACTION_TYPE_FIT_TO_OUTPUT:
+	case ACTION_TYPE_SNAP_TO_REGION:
+	case ACTION_TYPE_TOGGLE_SNAP_TO_REGION:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void
 actions_run(struct view *activator, struct server *server,
 	struct wl_list *actions, struct cursor_context *cursor_ctx)
@@ -885,6 +926,10 @@ actions_run(struct view *activator, struct server *server,
 		 * previous action
 		 */
 		view = view_for_action(activator, server, action, &ctx);
+
+		if (view && view_is_wex(view) && action_modifies_view(action->type)) {
+			continue;
+		}
 
 		switch (action->type) {
 		case ACTION_TYPE_CLOSE:

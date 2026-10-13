@@ -473,6 +473,7 @@ void xdg_shell_init(struct server *server);
  * session is locked; it will simply do nothing.
  */
 void desktop_focus_view(struct view *view, bool raise);
+void desktop_focus_view_forced(struct view *view, bool raise);
 
 /**
  * desktop_focus_view_or_surface() - like desktop_focus_view() but can

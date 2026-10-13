@@ -228,7 +228,7 @@ matches_criteria(struct view *view, enum lab_view_criteria criteria)
 	if (!view_is_focusable(view)) {
 		return false;
 	}
-	if (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP || view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL) {
+	if (view_is_wex(view)) {
 		return false;
 	}
 	if (criteria & LAB_VIEW_CRITERIA_CURRENT_WORKSPACE) {
@@ -1653,6 +1653,10 @@ view_set_ssd_mode(struct view *view, enum ssd_mode mode)
 {
 	assert(view);
 
+	if (view_is_wex(view)) {
+		mode = LAB_SSD_MODE_NONE;
+	}
+
 	if (view->shaded || view->fullscreen
 			|| mode == view_get_ssd_mode(view)) {
 		return;
@@ -1937,6 +1941,9 @@ void
 view_move_to_edge(struct view *view, enum view_edge direction, bool snap_to_windows)
 {
 	assert(view);
+	if (view_is_wex(view)) {
+		return;
+	}
 	if (!output_is_usable(view->output)) {
 		wlr_log(WLR_ERROR, "view has no output, not moving to edge");
 		return;
@@ -2020,6 +2027,9 @@ void
 view_grow_to_edge(struct view *view, enum view_edge direction)
 {
 	assert(view);
+	if (view_is_wex(view)) {
+		return;
+	}
 	/* TODO: allow grow to edge if maximized along the other axis */
 	if (view->fullscreen || view->maximized != VIEW_AXIS_NONE) {
 		return;
@@ -2041,6 +2051,9 @@ void
 view_shrink_to_edge(struct view *view, enum view_edge direction)
 {
 	assert(view);
+	if (view_is_wex(view)) {
+		return;
+	}
 
 	/* TODO: allow shrink to edge if maximized along the other axis */
 	if (view->fullscreen || view->maximized != VIEW_AXIS_NONE) {
@@ -2125,7 +2138,7 @@ view_snap_to_edge(struct view *view, enum view_edge edge,
 {
 	assert(view);
 
-	if (view->fullscreen) {
+	if (view->fullscreen || view_is_wex(view)) {
 		return;
 	}
 
@@ -2181,7 +2194,7 @@ view_snap_to_region(struct view *view, struct region *region,
 	assert(view);
 	assert(region);
 
-	if (view->fullscreen) {
+	if (view->fullscreen || view_is_wex(view)) {
 		return;
 	}
 

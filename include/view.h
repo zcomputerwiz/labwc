@@ -296,6 +296,12 @@ struct view {
 	} events;
 };
 
+static inline bool
+view_is_wex(const struct view *view)
+{
+	return view != NULL && view->wex_window != NULL;
+}
+
 struct view_query {
 	struct wl_list link;
 	char *identifier;

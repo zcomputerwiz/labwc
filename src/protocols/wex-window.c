@@ -75,6 +75,7 @@ handle_manager_get_window(struct wl_client *client,
 	win->manager = manager;
 	win->view = view;
 	view->wex_window = win;
+	view_set_ssd_mode(view, LAB_SSD_MODE_NONE);
 
 	win->resource = wl_resource_create(client,
 		&wex_window_v1_interface, version, id);
@@ -220,12 +221,8 @@ handle_wex_window_activate(struct wl_client *client,
 		view_minimize(win->view, false);
 	}
 
-	wlr_scene_node_raise_to_top(&win->view->scene_tree->node);
-
-	if (win->view->surface) {
-		seat_focus_surface(&win->manager->server->seat, win->view->surface);
-		win->manager->server->active_view = win->view;
-	}
+	desktop_focus_view_forced(win->view, /*raise*/ true);
+	win->manager->server->active_view = win->view;
 }
 
 static const struct wex_window_v1_interface wex_window_impl = {

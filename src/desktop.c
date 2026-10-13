@@ -40,8 +40,8 @@ desktop_arrange_all_views(struct server *server)
 	}
 }
 
-void
-desktop_focus_view(struct view *view, bool raise)
+static void
+desktop_focus_view_impl(struct view *view, bool raise)
 {
 	assert(view);
 	/*
@@ -90,6 +90,21 @@ desktop_focus_view(struct view *view, bool raise)
 	}
 }
 
+void
+desktop_focus_view(struct view *view, bool raise)
+{
+	if (view_is_wex(view)) {
+		return;
+	}
+	desktop_focus_view_impl(view, raise);
+}
+
+void
+desktop_focus_view_forced(struct view *view, bool raise)
+{
+	desktop_focus_view_impl(view, raise);
+}
+
 /* TODO: focus layer-shell surfaces also? */
 void
 desktop_focus_view_or_surface(struct seat *seat, struct view *view,
@@ -122,7 +137,7 @@ desktop_topmost_focusable_view(struct server *server)
 			continue;
 		}
 		view = node_view_from_node(node);
-		if (view->mapped && view_is_focusable(view)) {
+		if (view->mapped && view_is_focusable(view) && !view_is_wex(view)) {
 			return view;
 		}
 	}

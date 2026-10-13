@@ -258,7 +258,7 @@ interactive_finish(struct view *view)
 		return;
 	}
 
-	if (view->server->input_mode == LAB_INPUT_STATE_MOVE) {
+	if (view->server->input_mode == LAB_INPUT_STATE_MOVE && !view_is_wex(view)) {
 		if (!snap_to_region(view)) {
 			snap_to_edge(view);
 		}
