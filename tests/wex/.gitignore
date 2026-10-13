@@ -1,0 +1,8 @@
+zones-client
+stack-client
+alpha-client
+warp-client
+*.o
+*-protocol.c
+*-protocol.h
+output/
