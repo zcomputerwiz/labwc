@@ -53,6 +53,7 @@ cleanup() {
     echo "Stopping compositor (PID $COMPOSITOR_PID)..."
     kill "$COMPOSITOR_PID" 2>/dev/null || true
     wait "$COMPOSITOR_PID" 2>/dev/null || true
+    cp "$XDG_RUNTIME_DIR/labwc.log" "$OUT_DIR/compositor.log"
     rm -rf "$XDG_RUNTIME_DIR"
 }
 trap cleanup EXIT

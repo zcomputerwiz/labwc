@@ -174,12 +174,13 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 	assert(wl_display_roundtrip(ctx->display) >= 0);
 }
 static int association_test(void);
-static int publish_association(void);
+static int publish_association(bool hosting);
 static int scene_test(void);
 int main(int argc, char **argv)
 {
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
-	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association();
+	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association(false);
+	if (argc == 2 && !strcmp(argv[1], "--publish-hosting")) return publish_association(true);
 	if (argc == 2 && !strcmp(argv[1], "--scene")) return scene_test();
 	struct wex_context native;
 	struct wex_window_obj csd, ssd, late, frame;
@@ -271,13 +272,13 @@ int main(int argc, char **argv)
 	return 0;
 }
 
-static int publish_association(void)
+static int publish_association(bool hosting)
 {
 	struct wex_context native;
 	struct wex_window_obj win;
 	struct observer owner = {.protocol_version = 4};
 	assert(wex_context_init(&native, "wayland-0"));
-	map(&win, &native, "L2 Wine association peer", false);
+	map(&win, &native, "L2 Wine association peer", hosting);
 	observe(&owner);
 	struct item *item = find(&owner, "L2 Wine association peer");
 	printf("LEASE %s %s\n", item->token, item->controller);
@@ -313,7 +314,7 @@ static int publish_association(void)
 	return 0;
 }
 
-struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies; };
+struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies, configured_serial, configured_status; };
 static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
 static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 {
@@ -335,10 +336,17 @@ static void foreign_focus(void *data, struct wex_window_v1 *obj, uint32_t epoch,
 	frame->focus = target;
 	frame->focus_replies++;
 }
+static void configured_foreign(void *data, struct wex_window_v1 *obj, uint32_t serial, uint32_t status)
+{
+	struct frame_status *frame = data;
+	frame->configured_serial = serial;
+	frame->configured_status = status;
+}
 static const struct wex_window_v1_listener frame_listener = {
 	.handle = frame_handle, .foreign_association = association,
 	.foreign_group = group,
 	.foreign_focus = foreign_focus,
+	.configured_foreign = configured_foreign,
 };
 static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
 		struct frame_status *status)
@@ -470,6 +478,8 @@ static void scene_pump(struct observer *bridge, struct wex_context *native)
 {
 	pump(bridge);
 	assert(wl_display_roundtrip(native->display) >= 0);
+	/* Native requests can publish events to the other connection. */
+	pump(bridge);
 }
 static void scene_click(struct observer *bridge, struct wex_context *native,
 		struct zwlr_virtual_pointer_v1 *pointer, int x, int y)
@@ -524,7 +534,7 @@ static int scene_test(void)
 {
 	struct wex_context native;
 	struct wex_window_obj background, target, frame;
-	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 6};
+	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 7};
 	struct frame_status status = {0};
 	assert(wex_context_init(&native, "wayland-0"));
 	assert(wex_window_init(&background, &native, "L2 scene background", 500, 400, 0xff00ff00));
@@ -567,6 +577,20 @@ static int scene_test(void)
 	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
 	scene_pump(&bridge, &native);
 	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_v1_configure_foreign(frame.wex_win, 10, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 10 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_v1_uncommit_foreign(frame.wex_win, 11);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 11 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_uncommit_foreign(frame.wex_win, 12);
+	pump(&bridge);
+	assert(status.configured_serial == 12 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	wex_window_v1_configure_foreign(frame.wex_win, 13, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 13 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	puts("PASS numbered configure/uncommit replies, idempotent detach and retained reservation");
 	wex_window_commit_buffer(&target);
 	scene_pump(&bridge, &native);
 	capture_scene("scene-initial");
@@ -657,6 +681,37 @@ static int scene_test(void)
 	wex_buffer_destroy(&menu_buffer);
 	wl_surface_commit(frame.surface);
 	scene_pump(&bridge, &native);
+	/* Native geometry/policy changes cannot keep an obsolete frame cutout. */
+	struct wex_buffer original_buffer = target.buffer;
+	assert(wex_buffer_create(&native, &target.buffer, 239, 180, 0x80000080));
+	xdg_surface_set_window_geometry(target.xdg_surface, 0, 0, 239, 180);
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	struct wex_buffer resized_buffer = target.buffer;
+	target.buffer = original_buffer;
+	xdg_surface_set_window_geometry(target.xdg_surface, 0, 0, 240, 180);
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_buffer_destroy(&resized_buffer);
+	wex_window_v1_configure_foreign(frame.wex_win, 20, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 20 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	zxdg_toplevel_decoration_v1_set_mode(target.deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	wex_window_v1_configure_foreign(frame.wex_win, 21, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 21 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+	zxdg_toplevel_decoration_v1_set_mode(target.deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	wex_window_v1_configure_foreign(frame.wex_win, 22, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.configured_serial == 22 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	puts("PASS native geometry/policy changes detach safely and allow explicit matching reattachment");
 	/* Lose only the controller; the native app and its source buffers survive. */
 	wl_display_disconnect(owner.ctx.display);
 	scene_pump(&bridge, &native);
@@ -686,7 +741,7 @@ static int scene_test(void)
 	assert(item && !item->closed && item->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
 	/* Recreate an independent frame, then crash only the native connection. */
 	memset(&bridge, 0, sizeof(bridge));
-	bridge.protocol_version = 6;
+	bridge.protocol_version = 7;
 	observe(&bridge);
 	assert(wex_window_init(&frame, &bridge.ctx, "L2 recovery frame", 300, 240, 0xffff0000));
 	frame.wex_win = wex_window_manager_v1_get_window(bridge.manager, frame.xdg_toplevel);

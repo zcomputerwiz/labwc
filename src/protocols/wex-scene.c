@@ -28,6 +28,7 @@ struct wex_scene {
 	struct wlr_box pieces[4];
 	struct wl_listener commit, native_frame_done;
 	struct wl_listener focus_change;
+	struct wl_listener native_commit;
 	enum ssd_mode restore_decor;
 	bool state_sync;
 };
@@ -218,6 +219,20 @@ focus_changed(struct wl_listener *listener, void *data)
 	wex_window_send_foreign_focus(scene->frame);
 }
 
+static void
+native_committed(struct wl_listener *listener, void *data)
+{
+	struct wex_scene *scene = wl_container_of(listener, scene, native_commit);
+	struct view *native = scene->native;
+	if (!native->surface->buffer || native->current.width != scene->client.width ||
+			native->current.height != scene->client.height ||
+			view_get_ssd_mode(native) != LAB_SSD_MODE_NONE ||
+			(native->ssd_preference == LAB_SSD_PREF_CLIENT &&
+			 scene->restore_decor != LAB_SSD_MODE_NONE)) {
+		wex_window_drop_scene(scene->frame);
+	}
+}
+
 struct wex_scene *
 wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr_box *client)
 {
@@ -279,6 +294,8 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 	scene->native_root.extra = &scene->native_frame_done;
 	scene->focus_change.notify = focus_changed;
 	wl_signal_add(&native->server->seat.seat->keyboard_state.events.focus_change, &scene->focus_change);
+	scene->native_commit.notify = native_committed;
+	wl_signal_add(&native->surface->events.commit, &scene->native_commit);
 	view_set_ssd_mode(native, LAB_SSD_MODE_NONE);
 	wlr_scene_node_reparent(&native->scene_tree->node, view->scene_tree);
 	struct wlr_box geometry = {0};
@@ -293,6 +310,7 @@ void
 wex_scene_destroy(struct wex_scene *scene)
 {
 	wl_list_remove(&scene->focus_change.link);
+	wl_list_remove(&scene->native_commit.link);
 	struct view *native = scene->native;
 	struct wlr_scene_tree *parent = scene->restore_parent;
 	if (!parent) parent = native->server->workspaces.current->tree;

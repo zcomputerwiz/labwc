@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="6">
+  <interface name="wex_window_manager_v1" version="7">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -68,7 +68,7 @@
     </event>
   </interface>
 
-  <interface name="wex_window_v1" version="6">
+  <interface name="wex_window_v1" version="7">
     <description summary="window controls interface">
       Provides operations for stacking, layering, shell edge reservation,
       and direct activation.
@@ -225,6 +225,29 @@
       </description>
       <arg name="epoch" type="uint"/>
       <arg name="target" type="uint" enum="focus_target"/>
+    </event>
+    <request name="uncommit_foreign" since="7">
+      <description summary="detach content while retaining its reservation">
+        Detaches an active group, restores native decorations and hides the
+        obsolete frame. Replies with detached even if no group was active.
+        The prepared reservation remains available for a later commit after
+        matching buffers and client geometry are ready. Does not activate.
+      </description>
+      <arg name="serial" type="uint"/>
+    </request>
+    <request name="configure_foreign" since="7">
+      <description summary="numbered commit for asynchronous controllers">
+        Same geometry and validation as commit_foreign. Replies with configured_foreign
+        after reporting observed group state, distinguishing request completion
+        from unsolicited detached notifications. Serial is opaque to the server.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+    </request>
+    <event name="configured_foreign" since="7">
+      <arg name="serial" type="uint"/>
+      <arg name="status" type="uint" enum="group_status"/>
     </event>
   </interface>
   <interface name="wex_foreign_window_v1" version="4">

@@ -589,6 +589,30 @@ handle_wex_window_set_foreign_focus(struct wl_client *client, struct wl_resource
 	wex_window_send_foreign_focus(frame);
 }
 
+static void
+handle_wex_window_uncommit_foreign(struct wl_client *client, struct wl_resource *resource, uint32_t serial)
+{
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	if (frame->scene) wex_window_drop_scene(frame);
+	else {
+		wex_window_v1_send_foreign_group(resource, WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+		wex_window_send_foreign_focus(frame);
+	}
+	wex_window_v1_send_configured_foreign(resource, serial, WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+}
+
+static void
+handle_wex_window_configure_foreign(struct wl_client *client, struct wl_resource *resource,
+		uint32_t serial, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	handle_wex_window_commit_foreign(client, resource, x, y, width, height);
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	struct wlr_box rect = {x, y, width, height};
+	wex_window_v1_send_configured_foreign(resource, serial,
+		frame->scene && wex_scene_matches(frame->scene, &rect) ?
+		WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -603,6 +627,8 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.associate_foreign = handle_wex_window_associate_foreign,
 	.commit_foreign = handle_wex_window_commit_foreign,
 	.set_foreign_focus = handle_wex_window_set_foreign_focus,
+	.uncommit_foreign = handle_wex_window_uncommit_foreign,
+	.configure_foreign = handle_wex_window_configure_foreign,
 };
 
 static void
@@ -676,7 +702,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 6, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 7, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
