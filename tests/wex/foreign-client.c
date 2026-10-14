@@ -275,12 +275,15 @@ int main(int argc, char **argv)
 	return 0;
 }
 
+static struct zwp_virtual_keyboard_v1 *scene_keyboard(struct observer *bridge);
+
 static int publish_association(bool hosting)
 {
 	struct wex_context native;
 	struct wex_window_obj win;
 	struct observer owner = {.protocol_version = 4};
 	struct zwlr_virtual_pointer_v1 *pointer = NULL;
+	struct zwp_virtual_keyboard_v1 *keyboard = NULL;
 	assert(wex_context_init(&native, "wayland-0"));
 	map(&win, &native, "L2 Wine association peer", hosting);
 	observe(&owner);
@@ -337,15 +340,25 @@ static int publish_association(bool hosting)
 				printf("STATE %u\n",!!(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)));
 				fflush(stdout);
 			}
+			unsigned key;
+			if (sscanf(command,"key %u",&key) == 1) {
+				if (!keyboard) keyboard=scene_keyboard(&owner);
+				zwp_virtual_keyboard_v1_key(keyboard,1,key,WL_KEYBOARD_KEY_STATE_PRESSED);
+				zwp_virtual_keyboard_v1_key(keyboard,2,key,WL_KEYBOARD_KEY_STATE_RELEASED);
+				pump(&owner);
+				puts("KEY"); fflush(stdout);
+			}
 			int click_x, click_y;
-			if (sscanf(command,"click %d %d",&click_x,&click_y) == 2) {
+			bool right_click = sscanf(command,"right %d %d",&click_x,&click_y) == 2;
+			if (right_click || sscanf(command,"click %d %d",&click_x,&click_y) == 2) {
+				uint32_t button = right_click ? BTN_RIGHT : BTN_LEFT;
 				if (!pointer) pointer=zwlr_virtual_pointer_manager_v1_create_virtual_pointer(
 					owner.ctx.virtual_pointer_manager,owner.ctx.seat);
 				zwlr_virtual_pointer_v1_motion_absolute(pointer,0,click_x,click_y,1280,720);
 				zwlr_virtual_pointer_v1_frame(pointer);
-				zwlr_virtual_pointer_v1_button(pointer,0,BTN_LEFT,WL_POINTER_BUTTON_STATE_PRESSED);
+				zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_PRESSED);
 				zwlr_virtual_pointer_v1_frame(pointer);
-				zwlr_virtual_pointer_v1_button(pointer,0,BTN_LEFT,WL_POINTER_BUTTON_STATE_RELEASED);
+				zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_RELEASED);
 				zwlr_virtual_pointer_v1_frame(pointer);
 				pump(&owner);
 				assert(wl_display_roundtrip(native.display)>=0);
