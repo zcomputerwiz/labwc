@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <linux/input-event-codes.h>
 #include "shm-common.h"
 #include "wex-window-v1-client-protocol.h"
 #include "xx-zones-v1-client-protocol.h"
@@ -169,10 +172,12 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 }
 static int association_test(void);
 static int publish_association(void);
+static int scene_test(void);
 int main(int argc, char **argv)
 {
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
 	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association();
+	if (argc == 2 && !strcmp(argv[1], "--scene")) return scene_test();
 	struct wex_context native;
 	struct wex_window_obj csd, ssd, late, frame;
 	struct observer first = {0}, second = {0};
@@ -305,7 +310,7 @@ static int publish_association(void)
 	return 0;
 }
 
-struct frame_status { unsigned status, replies; };
+struct frame_status { unsigned status, replies, group, group_replies; };
 static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
 static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 {
@@ -313,8 +318,15 @@ static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 	frame->status = status;
 	frame->replies++;
 }
+static void group(void *data, struct wex_window_v1 *obj, uint32_t status)
+{
+	struct frame_status *frame = data;
+	frame->group = status;
+	frame->group_replies++;
+}
 static const struct wex_window_v1_listener frame_listener = {
 	.handle = frame_handle, .foreign_association = association,
+	.foreign_group = group,
 };
 static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
 		struct frame_status *status)
@@ -416,5 +428,203 @@ static int association_test(void)
 	wl_display_disconnect(owner.ctx.display);
 	wl_display_disconnect(bridge.ctx.display);
 	puts("FOREIGN_ASSOCIATION_PASSED");
+	return 0;
+}
+
+static void capture_scene(const char *name)
+{
+	char path[1024];
+	const char *directory = getenv("WEX_SCENE_TEST_DIR");
+	assert(directory);
+	snprintf(path, sizeof(path), "%s/%s.png", directory, name);
+	usleep(100000);
+	pid_t child = fork();
+	assert(child >= 0);
+	if (!child) { execlp("grim", "grim", path, NULL); _exit(127); }
+	int status;
+	assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+}
+static void position(struct wex_window_obj *win, struct xx_zone_v1 *zone, int x, int y)
+{
+	if (!win->zone_item) {
+		win->zone_item = xx_zone_manager_v1_get_zone_item(win->ctx->zone_manager, win->xdg_toplevel);
+		xx_zone_v1_add_item(zone, win->zone_item);
+	}
+	xx_zone_item_v1_set_position(win->zone_item, x, y);
+	wl_surface_commit(win->surface);
+	assert(wl_display_roundtrip(win->ctx->display) >= 0);
+}
+static void scene_pump(struct observer *bridge, struct wex_context *native)
+{
+	pump(bridge);
+	assert(wl_display_roundtrip(native->display) >= 0);
+}
+static void scene_click(struct observer *bridge, struct wex_context *native,
+		struct zwlr_virtual_pointer_v1 *pointer, int x, int y)
+{
+	zwlr_virtual_pointer_v1_motion_absolute(pointer, 0, x, y, 1280, 800);
+	zwlr_virtual_pointer_v1_frame(pointer);
+	scene_pump(bridge, native);
+	zwlr_virtual_pointer_v1_button(pointer, 0, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+	zwlr_virtual_pointer_v1_frame(pointer);
+	scene_pump(bridge, native);
+	zwlr_virtual_pointer_v1_button(pointer, 0, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+	zwlr_virtual_pointer_v1_frame(pointer);
+	scene_pump(bridge, native);
+}
+static int scene_test(void)
+{
+	struct wex_context native;
+	struct wex_window_obj background, target, frame;
+	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 5};
+	struct frame_status status = {0};
+	assert(wex_context_init(&native, "wayland-0"));
+	assert(wex_window_init(&background, &native, "L2 scene background", 500, 400, 0xff00ff00));
+	wl_surface_commit(background.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	wex_window_commit_buffer(&background);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	struct xx_zone_v1 *native_zone = xx_zone_manager_v1_get_zone(native.zone_manager, NULL);
+	position(&background, native_zone, 70, 70);
+	map(&target, &native, "L2 scene target", true);
+	uint32_t *pixels = target.buffer.data;
+	for (int y = 0; y < 180; ++y) {
+		for (int x = 0; x < 240; ++x) pixels[y * 240 + x] =
+			(x >= 104 && x < 136 && y >= 74 && y < 106) ? 0 : 0x80000080;
+	}
+	struct wl_region *input = wl_compositor_create_region(native.compositor);
+	wl_region_add(input, 0, 0, 240, 180);
+	wl_region_subtract(input, 104, 74, 32, 32);
+	wl_surface_set_input_region(target.surface, input);
+	wl_region_destroy(input);
+	wex_window_commit_buffer(&target);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	observe(&owner);
+	observe(&bridge);
+	struct item *item = find(&owner, "L2 scene target");
+	assert(wex_window_init(&frame, &bridge.ctx, "L2 scene frame", 300, 240, 0xffff0000));
+	frame.wex_win = wex_window_manager_v1_get_window(bridge.manager, frame.xdg_toplevel);
+	wex_window_v1_add_listener(frame.wex_win, &frame_listener, &status);
+	request_association(&bridge, &frame, &status, item->token, item->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	pump(&bridge);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+	wl_surface_commit(frame.surface);
+	pump(&bridge);
+	wex_window_commit_buffer(&frame);
+	pump(&bridge);
+	struct xx_zone_v1 *frame_zone = xx_zone_manager_v1_get_zone(bridge.ctx.zone_manager, NULL);
+	position(&frame, frame_zone, 100, 100);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	capture_scene("scene-initial");
+	wex_window_v1_commit_foreign(frame.wex_win, -1, 40, 240, 180);
+	pump(&bridge);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	pump(&bridge);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	struct zwlr_virtual_pointer_v1 *pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(
+		bridge.ctx.virtual_pointer_manager, bridge.ctx.seat);
+	scene_click(&bridge, &native, pointer, 105, 105);
+	assert(bridge.ctx.pointer_focus_surface == frame.surface);
+	scene_click(&bridge, &native, pointer, 390, 150);
+	assert(bridge.ctx.pointer_focus_surface == frame.surface);
+	assert(bridge.ctx.pointer_x == 290 && bridge.ctx.pointer_y == 50);
+	scene_click(&bridge, &native, pointer, 150, 180);
+	assert(native.pointer_focus_surface == target.surface);
+	scene_click(&bridge, &native, pointer, 240, 230);
+	assert(native.pointer_focus_surface == background.surface);
+	wex_window_v1_activate(frame.wex_win);
+	scene_pump(&bridge, &native);
+	assert(native.keyboard_focus_surface == target.surface && !bridge.ctx.keyboard_focus_surface);
+	puts("PASS frame-ring/native/input-hole routing and physical native activation");
+	position(&frame, frame_zone, 200, 150);
+	scene_pump(&bridge, &native);
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	capture_scene("scene-moved");
+	zwlr_foreign_toplevel_handle_v1_set_minimized(item->handle);
+	pump(&owner);
+	assert(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED));
+	scene_pump(&bridge, &native);
+	capture_scene("scene-minimized");
+	wex_window_v1_activate(frame.wex_win);
+	scene_pump(&bridge, &native);
+	assert(native.keyboard_focus_surface == target.surface);
+	capture_scene("scene-restored");
+	/* The original Wine subsurface tree must render above native content. */
+	struct wl_surface *menu = wl_compositor_create_surface(bridge.ctx.compositor);
+	struct wl_subsurface *sub = wl_subcompositor_get_subsurface(bridge.ctx.subcompositor, menu, frame.surface);
+	struct wex_buffer menu_buffer;
+	assert(wex_buffer_create(&bridge.ctx, &menu_buffer, 40, 30, 0xffffff00));
+	wl_subsurface_set_position(sub, 60, 60);
+	wl_surface_attach(menu, menu_buffer.wl_buffer, 0, 0);
+	wl_surface_damage(menu, 0, 0, 40, 30);
+	wl_surface_commit(menu);
+	wl_surface_commit(frame.surface);
+	scene_pump(&bridge, &native);
+	capture_scene("scene-menu");
+	wl_subsurface_destroy(sub);
+	wl_surface_destroy(menu);
+	wex_buffer_destroy(&menu_buffer);
+	wl_surface_commit(frame.surface);
+	scene_pump(&bridge, &native);
+	/* Lose only the controller; the native app and its source buffers survive. */
+	wl_display_disconnect(owner.ctx.display);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	struct item *remaining = find(&bridge, "L2 scene target");
+	wex_foreign_window_v1_refresh(remaining->foreign);
+	pump(&bridge);
+	assert(remaining->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
+	capture_scene("scene-detached");
+	puts("PASS grouped movement/minimize/restore, Wine menu preservation and controller-loss native decoration recovery");
+	/* Abrupt proxy connection loss must leave the native application usable. */
+	request_association(&bridge, &frame, &status, remaining->token, remaining->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wl_display_disconnect(bridge.ctx.display);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	memset(&owner, 0, sizeof(owner));
+	owner.protocol_version = 4;
+	observe(&owner);
+	item = find(&owner, "L2 scene target");
+	assert(item && !item->closed && item->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
+	/* Recreate an independent frame, then crash only the native connection. */
+	memset(&bridge, 0, sizeof(bridge));
+	bridge.protocol_version = 5;
+	observe(&bridge);
+	assert(wex_window_init(&frame, &bridge.ctx, "L2 recovery frame", 300, 240, 0xffff0000));
+	frame.wex_win = wex_window_manager_v1_get_window(bridge.manager, frame.xdg_toplevel);
+	wex_window_v1_add_listener(frame.wex_win, &frame_listener, &status);
+	request_association(&bridge, &frame, &status, item->token, item->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wl_surface_commit(frame.surface);
+	pump(&bridge);
+	wex_window_commit_buffer(&frame);
+	pump(&bridge);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wl_display_disconnect(native.display);
+	pump(&owner);
+	pump(&bridge);
+	assert(item->closed && item->foreign_closed);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	puts("PASS abrupt frame and native connection loss without compositor failure");
+	wex_window_finish(&frame);
+	pump(&bridge);
+	wl_display_disconnect(owner.ctx.display);
+	wl_display_disconnect(bridge.ctx.display);
+	puts("FOREIGN_SCENE_PASSED");
 	return 0;
 }

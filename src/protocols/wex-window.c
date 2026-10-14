@@ -57,6 +57,15 @@ release_foreign_association(struct wex_window *frame, bool notify)
 	if (!foreign) {
 		return;
 	}
+	if (frame->scene) {
+		struct wex_scene *scene = frame->scene;
+		frame->scene = NULL;
+		wex_scene_destroy(scene);
+		if (notify && frame->view) {
+			wex_window_v1_send_foreign_group(frame->resource,
+				WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+		}
+	}
 	if (foreign->view && foreign->view->wex_foreign_frame == frame) {
 		foreign->view->wex_foreign_frame = NULL;
 	}
@@ -66,6 +75,17 @@ release_foreign_association(struct wex_window *frame, bool notify)
 		wex_window_v1_send_foreign_association(frame->resource,
 			WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
 	}
+}
+
+void
+wex_window_drop_scene(struct wex_window *frame)
+{
+	struct wex_scene *scene = frame->scene;
+	if (!scene) return;
+	frame->scene = NULL;
+	wex_scene_destroy(scene);
+	if (frame->view) wex_window_v1_send_foreign_group(frame->resource,
+		WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
 }
 
 static void
@@ -78,7 +98,9 @@ foreign_send_snapshot(struct wex_foreign_window *foreign)
 	uint32_t mode = WEX_FOREIGN_WINDOW_V1_DECORATION_NONE;
 	if (view->ssd_preference == LAB_SSD_PREF_CLIENT) {
 		mode = WEX_FOREIGN_WINDOW_V1_DECORATION_CLIENT;
-	} else if (view_get_ssd_mode(view) != LAB_SSD_MODE_NONE) {
+	} else if (view_get_ssd_mode(view) != LAB_SSD_MODE_NONE ||
+			(view->wex_foreign_frame && view->wex_foreign_frame->scene &&
+			wex_scene_server_decorated(view->wex_foreign_frame->scene))) {
 		mode = WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER;
 	}
 	struct view_size_hints hints = view_get_size_hints(view);
@@ -432,6 +454,10 @@ handle_wex_window_activate(struct wl_client *client,
 	if (win->view->minimized) {
 		view_minimize(win->view, false);
 	}
+	if (win->scene) {
+		desktop_focus_view_forced(wex_scene_native(win->scene), true);
+		return;
+	}
 
 	desktop_focus_view_forced(win->view, /*raise*/ true);
 	win->manager->server->active_view = win->view;
@@ -514,6 +540,23 @@ unavailable:
 		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
 }
 
+static void
+handle_wex_window_commit_foreign(struct wl_client *client, struct wl_resource *resource,
+		int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	struct wlr_box rect = {x, y, width, height};
+	if (frame->foreign && frame->foreign->view && !frame->scene) {
+		frame->scene = wex_scene_create(frame, frame->foreign->view, &rect);
+		if (frame->scene) {
+			wex_scene_view_moved(frame->view);
+			wex_foreign_window_update(frame->foreign->view);
+		}
+	}
+	wex_window_v1_send_foreign_group(resource, frame->scene && wex_scene_matches(frame->scene, &rect) ?
+		WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -526,6 +569,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
     .place_below_handle = handle_wex_window_place_below_handle,
     .restore = handle_wex_window_restore,
 	.associate_foreign = handle_wex_window_associate_foreign,
+	.commit_foreign = handle_wex_window_commit_foreign,
 };
 
 static void
@@ -599,7 +643,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 4, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 5, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);

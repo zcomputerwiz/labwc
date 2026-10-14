@@ -10,6 +10,8 @@
 struct server;
 struct view;
 struct wex_foreign_window;
+struct wex_scene;
+struct wlr_box;
 
 struct wex_window_manager {
 	struct wl_global *global;
@@ -25,6 +27,7 @@ struct wex_window {
 	struct view *view;
 	struct wl_resource *resource;
 	struct wex_foreign_window *foreign;
+	struct wex_scene *scene;
 	char handle[33];
 	uint32_t layer;
 	uint32_t exclusive_edge;
@@ -36,5 +39,15 @@ void wex_window_manager_finish(struct server *server);
 void wex_window_on_view_destroy(struct wex_window *win);
 void wex_foreign_window_update(struct view *view);
 bool wex_client_is_privileged(const struct wl_client *client, struct server *server);
+struct wex_scene *wex_scene_create(struct wex_window *frame, struct view *native,
+	const struct wlr_box *client);
+void wex_scene_destroy(struct wex_scene *scene);
+void wex_scene_view_moved(struct view *view);
+struct view *wex_scene_group_root(struct view *view);
+struct view *wex_scene_native(struct wex_scene *scene);
+bool wex_scene_matches(struct wex_scene *scene, const struct wlr_box *client);
+void wex_window_drop_scene(struct wex_window *frame);
+void wex_scene_view_minimized(struct view *view, bool minimized);
+bool wex_scene_server_decorated(struct wex_scene *scene);
 
 #endif /* LABWC_PROTOCOLS_WEX_WINDOW_H */

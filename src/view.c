@@ -611,6 +611,7 @@ view_moved(struct view *view)
 		lab_zone_item_notify_moved(view->zone_item);
 	}
 	wex_foreign_window_update(view);
+	wex_scene_view_moved(view);
 }
 
 void
@@ -785,6 +786,7 @@ _minimize(struct view *view, bool minimized)
 	} else {
 		view->impl->map(view);
 	}
+	wex_scene_view_minimized(view, minimized);
 }
 
 static void
@@ -2295,6 +2297,10 @@ void
 view_move_to_front(struct view *view)
 {
 	assert(view);
+	if (wex_scene_group_root(view) != view) {
+		view_move_to_front(wex_scene_group_root(view));
+		return;
+	}
 	/*
 	 * This function is called often, generally on every mouse
 	 * button press (more often for focus-follows-mouse). Avoid

@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$REPO_DIR/build"
+BUILD_DIR="${WEX_CHECK_COMP_BUILD:-$REPO_DIR/build}"
 OUT_DIR="${1:-$REPO_DIR/tests/wex/output}"
 
 mkdir -p "$OUT_DIR"
@@ -111,6 +111,17 @@ run_check "Native supplemental observation, controls and lifetime" \
 
 run_check "Native/frame association reservation and lifetime" \
     "$SCRIPT_DIR/foreign-client" --association
+
+run_check "Native/frame scene, input routing and recovery" \
+    env WEX_SCENE_TEST_DIR="$OUT_DIR" "$SCRIPT_DIR/foreign-client" --scene
+run_check "Frame ring visible" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-initial.png" 200 110 0xFFFF0000 1
+run_check "Native alpha blends with background through frame cutout" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-initial.png" 150 180 0xFF007F80 1
+run_check "Native transparency exposes background without proxy occlusion" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-initial.png" 240 230 0xFF00FF00 1
+run_check "Frame and native move together" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-moved.png" 250 230 0xFF007F80 1
+run_check "Group minimize exposes background" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-minimized.png" 205 155 0xFF00FF00 1
+run_check "Group restore restores frame" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-restored.png" 205 155 0xFFFF0000 1
+run_check "Wine menu subsurface stays above native content" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-menu.png" 270 220 0xFFFFFF00 1
+run_check "Controller loss hides obsolete proxy" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-detached.png" 205 155 0xFF00FF00 1
 
 # TEST 2: xx-zones-v1 Window Placement
 echo "Testing xx-zones-v1 explicit placement and centering bypass..."
