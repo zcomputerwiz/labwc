@@ -62,6 +62,14 @@ try:
     pixel('minimized', (255, 0, 0))
     command(c, 'restore')
     pixel('restored-without-focus', (0, 255, 0))
+    command(c, 'layer 0')
+    command(a, 'above ' + hc)
+    pixel('normal-before-restore', (255, 0, 0))
+    command(c, 'minimize')
+    command(c, 'restore')
+    pixel('restore-preserves-order', (255, 0, 0))
+    command(c, 'above ' + ha)
+    pixel('restored-window-can-raise', (0, 255, 0))
     print('SHARED_HANDLE_CHECK_PASSED', flush=True)
 finally:
     for p in clients:
