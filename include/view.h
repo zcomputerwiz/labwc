@@ -282,6 +282,7 @@ struct view {
 	bool zone_positioned;
 	struct wex_window *wex_window;
 	char wex_foreign_token[33]; /* native view lifetime, shared across observers */
+	struct wex_window *wex_foreign_frame; /* prepared reservation, no scene adoption */
 	uint32_t wex_layer;
 	uint32_t wex_exclusive_edge;
 	uint32_t wex_exclusive_size;

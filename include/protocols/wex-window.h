@@ -9,6 +9,7 @@
 
 struct server;
 struct view;
+struct wex_foreign_window;
 
 struct wex_window_manager {
 	struct wl_global *global;
@@ -23,6 +24,7 @@ struct wex_window {
 	struct wex_window_manager *manager;
 	struct view *view;
 	struct wl_resource *resource;
+	struct wex_foreign_window *foreign;
 	char handle[33];
 	uint32_t layer;
 	uint32_t exclusive_edge;

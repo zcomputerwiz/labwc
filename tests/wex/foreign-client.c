@@ -11,7 +11,7 @@
 struct item {
 	struct zwlr_foreign_toplevel_handle_v1 *handle;
 	struct wex_foreign_window_v1 *foreign;
-	char title[128], token[33];
+	char title[128], token[33], controller[33];
 	int x, y, width, height, min_width, min_height;
 	unsigned mode, done, states;
 	bool closed, foreign_closed;
@@ -23,6 +23,7 @@ struct observer {
 	struct zwlr_foreign_toplevel_manager_v1 *inventory;
 	struct item items[16];
 	unsigned count;
+	unsigned protocol_version;
 	char native_socket[108], native_xdisplay[128];
 };
 static void native_environment(void *data, struct wex_window_manager_v1 *obj,
@@ -38,6 +39,12 @@ static void token(void *data, struct wex_foreign_window_v1 *obj, const char *val
 	struct item *item = data;
 	assert(strlen(value) == 32 && strspn(value, "0123456789abcdef") == 32);
 	snprintf(item->token, sizeof(item->token), "%s", value);
+}
+static void controller(void *data, struct wex_foreign_window_v1 *obj, const char *value)
+{
+	struct item *item = data;
+	assert(strlen(value) == 32 && strspn(value, "0123456789abcdef") == 32);
+	snprintf(item->controller, sizeof(item->controller), "%s", value);
 }
 static void geometry(void *data, struct wex_foreign_window_v1 *obj,
 		int32_t x, int32_t y, int32_t width, int32_t height)
@@ -71,6 +78,7 @@ static void closed(void *data, struct wex_foreign_window_v1 *obj)
 static const struct wex_foreign_window_v1_listener supplement = {
 	.token = token, .geometry = geometry, .decoration = decoration,
 	.size_hints = hints, .done = done, .closed = closed,
+	.controller_handle = controller,
 };
 static void title(void *data, struct zwlr_foreign_toplevel_handle_v1 *obj, const char *value)
 {
@@ -117,8 +125,9 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 		const char *interface, uint32_t version)
 {
 	struct observer *observer = data;
-	if (!strcmp(interface, "wex_window_manager_v1") && version >= 3) {
-		observer->manager = wl_registry_bind(registry, name, &wex_window_manager_v1_interface, 3);
+	unsigned requested = observer->protocol_version ? observer->protocol_version : 3;
+	if (!strcmp(interface, "wex_window_manager_v1") && version >= requested) {
+		observer->manager = wl_registry_bind(registry, name, &wex_window_manager_v1_interface, requested);
 		wex_window_manager_v1_add_listener(observer->manager, &environment, observer);
 	} else if (!strcmp(interface, "zwlr_foreign_toplevel_manager_v1")) {
 		observer->inventory = wl_registry_bind(registry, name,
@@ -157,8 +166,10 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 	wex_window_commit_buffer(win);
 	assert(wl_display_roundtrip(ctx->display) >= 0);
 }
-int main(void)
+static int association_test(void);
+int main(int argc, char **argv)
 {
+	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
 	struct wex_context native;
 	struct wex_window_obj csd, ssd, late, frame;
 	struct observer first = {0}, second = {0};
@@ -246,5 +257,119 @@ int main(void)
 	wex_context_finish(&native);
 	wl_display_disconnect(first.ctx.display);
 	puts("FOREIGN_OBSERVATION_PASSED");
+	return 0;
+}
+
+struct frame_status { unsigned status, replies; };
+static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
+static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
+{
+	struct frame_status *frame = data;
+	frame->status = status;
+	frame->replies++;
+}
+static const struct wex_window_v1_listener frame_listener = {
+	.handle = frame_handle, .foreign_association = association,
+};
+static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
+		struct frame_status *status)
+{
+	assert(wex_window_init(frame, &bridge->ctx, "L2 prepared frame", 300, 220, 0xff885544));
+	frame->wex_win = wex_window_manager_v1_get_window(bridge->manager, frame->xdg_toplevel);
+	wex_window_v1_add_listener(frame->wex_win, &frame_listener, status);
+	pump(bridge);
+}
+static void request_association(struct observer *bridge, struct wex_window_obj *frame,
+		struct frame_status *status, const char *token_value, const char *controller_value,
+		unsigned expected)
+{
+	unsigned before = status->replies;
+	wex_window_v1_associate_foreign(frame->wex_win, token_value, controller_value);
+	pump(bridge);
+	assert(status->replies > before && status->status == expected);
+}
+static int association_test(void)
+{
+	struct wex_context native;
+	struct wex_window_obj one, two, frame, competitor;
+	struct observer owner = {.protocol_version = 4}, peer = {.protocol_version = 4};
+	struct observer bridge = {.protocol_version = 4};
+	struct frame_status status = {0}, competing = {0};
+	assert(wex_context_init(&native, "wayland-0"));
+	map(&one, &native, "L2 association native", false);
+	map(&two, &native, "L2 association SSD", true);
+	observe(&owner);
+	observe(&peer);
+	observe(&bridge);
+	struct item *a = find(&owner, "L2 association native");
+	struct item *b = find(&owner, "L2 association SSD");
+	struct item *other = find(&peer, "L2 association native");
+	assert(a->controller[0] && other->controller[0] && strcmp(a->controller, other->controller));
+	assert(!strcmp(a->token, other->token));
+	prepare_frame(&bridge, &frame, &status);
+	prepare_frame(&bridge, &competitor, &competing);
+	struct wl_surface *focus = native.keyboard_focus_surface;
+	int x = a->x, y = a->y;
+	request_association(&bridge, &frame, &status, a->token, a->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	request_association(&bridge, &frame, &status, a->token, a->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	request_association(&bridge, &frame, &status, b->token, a->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+	request_association(&bridge, &competitor, &competing, a->token, other->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+	wex_foreign_window_v1_refresh(a->foreign);
+	wex_foreign_window_v1_refresh(b->foreign);
+	pump(&owner);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	assert(a->x == x && a->y == y && b->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
+	assert(native.keyboard_focus_surface == focus && !bridge.ctx.keyboard_focus_surface);
+	puts("PASS cross-connection reservation, idempotence, mismatched/busy handles and no native scene/focus change");
+	char stale_controller[33];
+	snprintf(stale_controller, sizeof(stale_controller), "%s", a->controller);
+	wex_foreign_window_v1_destroy(a->foreign);
+	a->foreign = NULL;
+	pump(&owner);
+	pump(&bridge);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	request_association(&bridge, &frame, &status, a->token, stale_controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+	request_association(&bridge, &competitor, &competing, other->token, other->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wl_display_disconnect(peer.ctx.display);
+	pump(&bridge);
+	assert(competing.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	puts("PASS controller destruction/disconnection and stale controller rejection");
+	request_association(&bridge, &frame, &status, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_set_layer(frame.wex_win, WEX_WINDOW_V1_LAYER_SHELL);
+	pump(&bridge);
+	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	request_association(&bridge, &frame, &status, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+	wex_window_v1_set_layer(frame.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	request_association(&bridge, &frame, &status, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_finish(&frame);
+	pump(&bridge);
+	request_association(&bridge, &competitor, &competing, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	request_association(&bridge, &competitor, &competing, "", "",
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	request_association(&bridge, &competitor, &competing, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_finish(&two);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&bridge);
+	assert(competing.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	request_association(&bridge, &competitor, &competing, b->token, b->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+	puts("PASS shell role rejection, frame destruction, explicit release and native lifetime invalidation");
+	wex_window_finish(&competitor);
+	wex_window_finish(&one);
+	wex_context_finish(&native);
+	wl_display_disconnect(owner.ctx.display);
+	wl_display_disconnect(bridge.ctx.display);
+	puts("FOREIGN_ASSOCIATION_PASSED");
 	return 0;
 }

@@ -109,6 +109,9 @@ run_check "Shared handles across three clients and layer/lifetime invariants" \
 run_check "Native supplemental observation, controls and lifetime" \
     "$SCRIPT_DIR/foreign-client"
 
+run_check "Native/frame association reservation and lifetime" \
+    "$SCRIPT_DIR/foreign-client" --association
+
 # TEST 2: xx-zones-v1 Window Placement
 echo "Testing xx-zones-v1 explicit placement and centering bypass..."
 "$SCRIPT_DIR/zones-client" \

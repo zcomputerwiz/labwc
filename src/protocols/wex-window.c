@@ -46,7 +46,27 @@ struct wex_foreign_window {
 	struct view *view;
 	struct wl_resource *resource;
 	struct wl_listener toplevel_destroy;
+	struct wex_window *frame;
+	char controller_handle[33];
 };
+
+static void
+release_foreign_association(struct wex_window *frame, bool notify)
+{
+	struct wex_foreign_window *foreign = frame->foreign;
+	if (!foreign) {
+		return;
+	}
+	if (foreign->view && foreign->view->wex_foreign_frame == frame) {
+		foreign->view->wex_foreign_frame = NULL;
+	}
+	foreign->frame = NULL;
+	frame->foreign = NULL;
+	if (notify && frame->view) {
+		wex_window_v1_send_foreign_association(frame->resource,
+			WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	}
+}
 
 static void
 foreign_send_snapshot(struct wex_foreign_window *foreign)
@@ -91,6 +111,9 @@ static void
 foreign_resource_destroy(struct wl_resource *resource)
 {
 	struct wex_foreign_window *foreign = wl_resource_get_user_data(resource);
+	if (foreign->frame) {
+		release_foreign_association(foreign->frame, true);
+	}
 	if (foreign->view) {
 		wl_list_remove(&foreign->toplevel_destroy.link);
 	}
@@ -103,6 +126,9 @@ handle_foreign_toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	struct wex_foreign_window *foreign =
 		wl_container_of(listener, foreign, toplevel_destroy);
+	if (foreign->frame) {
+		release_foreign_association(foreign->frame, true);
+	}
 	wl_list_remove(&foreign->toplevel_destroy.link);
 	foreign->view = NULL;
 	wex_foreign_window_v1_send_closed(foreign->resource);
@@ -154,7 +180,8 @@ handle_manager_get_foreign(struct wl_client *client,
 	struct wex_foreign_window *foreign = znew(*foreign);
 	foreign->manager = manager;
 	foreign->resource = wl_resource_create(client,
-		&wex_foreign_window_v1_interface, 1, id);
+		&wex_foreign_window_v1_interface,
+		wl_resource_get_version(resource) >= 4 ? 4 : 1, id);
 	if (!foreign->resource) {
 		free(foreign);
 		wl_client_post_no_memory(client);
@@ -173,6 +200,15 @@ handle_manager_get_foreign(struct wl_client *client,
 		return;
 	}
 	foreign->view = found;
+	if (wl_resource_get_version(foreign->resource) >= 4) {
+		if (!generate_window_handle(foreign->controller_handle)) {
+			foreign->view = NULL;
+			wl_client_post_implementation_error(client, "cannot generate controller handle");
+			return;
+		}
+		wex_foreign_window_v1_send_controller_handle(foreign->resource,
+			foreign->controller_handle);
+	}
 	foreign->toplevel_destroy.notify = handle_foreign_toplevel_destroy;
 	wl_signal_add(&found->foreign_toplevel->events.toplevel_destroy,
 		&foreign->toplevel_destroy);
@@ -327,6 +363,10 @@ handle_wex_window_set_layer(struct wl_client *client,
 	}
 
 	win->layer = layer;
+	if (win->foreign && layer != WEX_WINDOW_V1_LAYER_NORMAL
+			&& layer != WEX_WINDOW_V1_LAYER_TOPMOST) {
+		release_foreign_association(win, true);
+	}
 	win->view->wex_layer = layer;
 	struct server *server = win->manager->server;
 
@@ -432,6 +472,48 @@ handle_wex_window_restore(struct wl_client *client, struct wl_resource *resource
     if (win && win->view && win->view->minimized) view_minimize(win->view, false);
 }
 
+static void
+handle_wex_window_associate_foreign(struct wl_client *client,
+		struct wl_resource *resource, const char *token, const char *handle)
+{
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	struct wex_foreign_window *foreign;
+	if (!*token && !*handle) {
+		release_foreign_association(frame, false);
+		wex_window_v1_send_foreign_association(resource,
+			WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+		return;
+	}
+	if (!frame->view || (frame->layer != WEX_WINDOW_V1_LAYER_NORMAL
+			&& frame->layer != WEX_WINDOW_V1_LAYER_TOPMOST)) {
+		goto unavailable;
+	}
+	wl_list_for_each(foreign, &frame->manager->foreign_windows, link) {
+		struct view *view = foreign->view;
+		if (!view || view_is_wex(view) || view == frame->view
+				|| strcmp(view->wex_foreign_token, token)
+				|| !foreign->controller_handle[0]
+				|| strcmp(foreign->controller_handle, handle)) {
+			continue;
+		}
+		if (view->wex_foreign_frame && view->wex_foreign_frame != frame) {
+			goto unavailable;
+		}
+		if (frame->foreign != foreign) {
+			release_foreign_association(frame, false);
+			frame->foreign = foreign;
+			foreign->frame = frame;
+			view->wex_foreign_frame = frame;
+		}
+		wex_window_v1_send_foreign_association(resource,
+			WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+		return;
+	}
+unavailable:
+	wex_window_v1_send_foreign_association(resource,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_UNAVAILABLE);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -443,6 +525,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
     .place_above_handle = handle_wex_window_place_above_handle,
     .place_below_handle = handle_wex_window_place_below_handle,
     .restore = handle_wex_window_restore,
+	.associate_foreign = handle_wex_window_associate_foreign,
 };
 
 static void
@@ -450,6 +533,7 @@ wex_window_resource_destroy(struct wl_resource *resource)
 {
 	struct wex_window *win = wl_resource_get_user_data(resource);
 	if (win) {
+		release_foreign_association(win, false);
 		if (win->view) {
 			win->view->wex_window = NULL;
 		}
@@ -464,6 +548,7 @@ wex_window_on_view_destroy(struct wex_window *win)
 	if (!win) {
 		return;
 	}
+	release_foreign_association(win, false);
 	win->view = NULL;
 }
 
@@ -514,7 +599,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 3, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 4, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
