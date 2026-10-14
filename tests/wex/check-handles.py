@@ -58,6 +58,10 @@ try:
     command(c, 'layer 1')
     command(a, 'above ' + hc)
     pixel('cross-layer-noop', (0, 255, 0))
+    command(c, 'minimize')
+    pixel('minimized', (255, 0, 0))
+    command(c, 'restore')
+    pixel('restored-without-focus', (0, 255, 0))
     print('SHARED_HANDLE_CHECK_PASSED', flush=True)
 finally:
     for p in clients:

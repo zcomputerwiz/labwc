@@ -278,6 +278,13 @@ handle_wex_window_place_below_handle(struct wl_client *client,
     if (sibling) handle_wex_window_place_below(client, resource, sibling->resource);
 }
 
+static void
+handle_wex_window_restore(struct wl_client *client, struct wl_resource *resource)
+{
+    struct wex_window *win = wl_resource_get_user_data(resource);
+    if (win && win->view && win->view->minimized) view_minimize(win->view, false);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -288,6 +295,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.activate = handle_wex_window_activate,
     .place_above_handle = handle_wex_window_place_above_handle,
     .place_below_handle = handle_wex_window_place_below_handle,
+    .restore = handle_wex_window_restore,
 };
 
 static void

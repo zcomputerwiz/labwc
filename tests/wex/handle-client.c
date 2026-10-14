@@ -67,8 +67,11 @@ int main(int argc, char **argv)
         if (!strncmp(line, "above ", 6)) wex_window_v1_place_above_handle(win.wex_win, line + 6);
         else if (!strncmp(line, "below ", 6)) wex_window_v1_place_below_handle(win.wex_win, line + 6);
         else if (!strncmp(line, "layer ", 6)) wex_window_v1_set_layer(win.wex_win, atoi(line + 6));
+        else if (!strcmp(line, "minimize")) xdg_toplevel_set_minimized(win.xdg_toplevel);
+        else if (!strcmp(line, "restore")) wex_window_v1_restore(win.wex_win);
         else return 5;
         if (wl_display_roundtrip(ctx.display) < 0) return 6;
+        if (ctx.keyboard_focus_surface) return 7;
         puts("ACK");
         fflush(stdout);
     }
