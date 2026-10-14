@@ -328,6 +328,7 @@ struct server {
 	struct wlr_scene_tree *desktop_tree;
 	struct wlr_scene_tree *shell_tree;
 	char *wex_socket_name;
+	const char *wex_native_socket_name; /* borrowed from wl_display */
 	struct wlr_alpha_modifier_v1 *alpha_modifier;
 	struct lab_pointer_warp_manager *pointer_warp;
 

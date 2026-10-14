@@ -13,6 +13,9 @@
 #include "protocols/xx-zones.h"
 #include "wex-window-v1-protocol.h"
 #include "labwc.h"
+#if HAVE_XWAYLAND
+#include <wlr/xwayland.h>
+#endif
 #include "view.h"
 #include "workspaces.h"
 #include "common/mem.h"
@@ -482,6 +485,16 @@ handle_wex_manager_bind(struct wl_client *client, void *data,
 		return;
 	}
 	wl_resource_set_implementation(resource, &wex_manager_impl, manager, NULL);
+	if (version >= 3) {
+		const char *xdisplay = "";
+#if HAVE_XWAYLAND
+		if (manager->server->xwayland) {
+			xdisplay = manager->server->xwayland->display_name;
+		}
+#endif
+		wex_window_manager_v1_send_native_environment(resource,
+			manager->server->wex_native_socket_name, xdisplay);
+	}
 }
 
 static void

@@ -55,6 +55,17 @@
       <arg name="id" type="new_id" interface="wex_foreign_window_v1"/>
       <arg name="toplevel" type="object" interface="zwlr_foreign_toplevel_handle_v1"/>
     </request>
+    <event name="native_environment" since="3">
+      <description summary="compositor-owned native application endpoints">
+        Sent once on binding. Native programs use the normal Wayland socket,
+        rather than inherit the shell's privileged socket. xwayland_display is
+        empty if XWayland is unavailable; remove DISPLAY in that case. These
+        values belong to this compositor, not an enclosing nested session.
+        Launch and D-Bus activation environments must agree on these endpoints.
+      </description>
+      <arg name="wayland_display" type="string"/>
+      <arg name="xwayland_display" type="string"/>
+    </event>
   </interface>
 
   <interface name="wex_window_v1" version="3">

@@ -735,6 +735,7 @@ server_start(struct server *server)
 		wlr_log_errno(WLR_ERROR, "unable to open wayland socket");
 		exit(EXIT_FAILURE);
 	}
+	server->wex_native_socket_name = socket;
 
 	const char *wex_sock = getenv("WEX_SHELL_SOCKET");
 	if (!wex_sock) {

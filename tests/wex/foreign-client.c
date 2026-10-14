@@ -23,7 +23,16 @@ struct observer {
 	struct zwlr_foreign_toplevel_manager_v1 *inventory;
 	struct item items[16];
 	unsigned count;
+	char native_socket[108], native_xdisplay[128];
 };
+static void native_environment(void *data, struct wex_window_manager_v1 *obj,
+		const char *wayland_display, const char *xwayland_display)
+{
+	struct observer *observer = data;
+	snprintf(observer->native_socket, sizeof(observer->native_socket), "%s", wayland_display);
+	snprintf(observer->native_xdisplay, sizeof(observer->native_xdisplay), "%s", xwayland_display);
+}
+static const struct wex_window_manager_v1_listener environment = { native_environment };
 static void token(void *data, struct wex_foreign_window_v1 *obj, const char *value)
 {
 	struct item *item = data;
@@ -110,6 +119,7 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
 	struct observer *observer = data;
 	if (!strcmp(interface, "wex_window_manager_v1") && version >= 3) {
 		observer->manager = wl_registry_bind(registry, name, &wex_window_manager_v1_interface, 3);
+		wex_window_manager_v1_add_listener(observer->manager, &environment, observer);
 	} else if (!strcmp(interface, "zwlr_foreign_toplevel_manager_v1")) {
 		observer->inventory = wl_registry_bind(registry, name,
 			&zwlr_foreign_toplevel_manager_v1_interface, version < 3 ? version : 3);
@@ -158,6 +168,11 @@ int main(void)
 	map(&ssd, &native, "L2 SSD", true);
 	observe(&first);
 	observe(&second);
+	assert(!strcmp(first.native_socket, "wayland-0"));
+	assert(!strcmp(first.native_socket, second.native_socket));
+	assert(!strcmp(first.native_xdisplay, second.native_xdisplay));
+	if (getenv("WEX_EXPECT_NO_XWAYLAND")) assert(!first.native_xdisplay[0]);
+	puts("PASS compositor native launch endpoints across privileged observers");
 	struct item *a = find(&first, "L2 CSD"), *b = find(&first, "L2 SSD");
 	assert(a->done && b->done && !a->foreign_closed && !b->foreign_closed);
 	assert(a->width == 240 && a->height == 180 && a->min_width == 120 && a->min_height == 90);
