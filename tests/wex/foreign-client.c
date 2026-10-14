@@ -165,9 +165,11 @@ static struct item *find(struct observer *observer, const char *value)
 		if (!strcmp(observer->items[i].title, value)) return &observer->items[i];
 	abort();
 }
-static void map(struct wex_window_obj *win, struct wex_context *ctx, const char *name, bool ssd)
+static void map_parent(struct wex_window_obj *win, struct wex_context *ctx,
+		const char *name, bool ssd, struct wex_window_obj *parent)
 {
 	assert(wex_window_init(win, ctx, name, 240, 180, 0xff338855));
+	if (parent) xdg_toplevel_set_parent(win->xdg_toplevel,parent->xdg_toplevel);
 	xdg_toplevel_set_min_size(win->xdg_toplevel, 120, 90);
 	if (ssd && win->deco) zxdg_toplevel_decoration_v1_set_mode(win->deco,
 		ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
@@ -175,6 +177,10 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 	assert(wl_display_roundtrip(ctx->display) >= 0);
 	wex_window_commit_buffer(win);
 	assert(wl_display_roundtrip(ctx->display) >= 0);
+}
+static void map(struct wex_window_obj *win, struct wex_context *ctx, const char *name, bool ssd)
+{
+	map_parent(win,ctx,name,ssd,NULL);
 }
 static int association_test(void);
 static int publish_association(bool hosting);
@@ -280,7 +286,8 @@ static struct zwp_virtual_keyboard_v1 *scene_keyboard(struct observer *bridge);
 static int publish_association(bool hosting)
 {
 	struct wex_context native;
-	struct wex_window_obj win;
+	struct wex_window_obj win, child;
+	bool main_alive = true, child_alive = false;
 	struct observer owner = {.protocol_version = 4};
 	struct zwlr_virtual_pointer_v1 *pointer = NULL;
 	struct zwp_virtual_keyboard_v1 *keyboard = NULL;
@@ -291,7 +298,11 @@ static int publish_association(bool hosting)
 	printf("LEASE %s %s\n", item->token, item->controller);
 	fflush(stdout);
 	for (;;) {
-		if (win.closed) break;
+		if (child_alive && child.closed) {
+			wex_window_finish(&child);
+			child_alive=false;
+		}
+		if ((main_alive && win.closed) || (!main_alive && !child_alive)) break;
 		struct pollfd fds[] = {
 			{wl_display_get_fd(native.display), POLLIN, 0},
 			{wl_display_get_fd(owner.ctx.display), POLLIN, 0},
@@ -307,6 +318,20 @@ static int publish_association(bool hosting)
 		if (fds[2].revents & (POLLIN | POLLHUP)) {
 			char command[32];
 			if (!fgets(command, sizeof(command), stdin) || !strcmp(command,"quit\n")) break;
+			if (!strcmp(command,"child\n") && main_alive && !child_alive) {
+				map_parent(&child,&native,"L2 Shell child",true,&win);
+				child_alive=true;
+			}
+			if (child_alive && (!strcmp(command,"orphan\n") || !strcmp(command,"parent\n"))) {
+				xdg_toplevel_set_parent(child.xdg_toplevel,!strcmp(command,"orphan\n") ? NULL : win.xdg_toplevel);
+				wl_surface_commit(child.surface);
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
+			if (!strcmp(command,"parent-close\n") && main_alive) {
+				wex_window_finish(&win);
+				main_alive=false;
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
 			if (!strcmp(command,"release\n") && item->foreign) {
 				wex_foreign_window_v1_destroy(item->foreign);
 				item->foreign = NULL;
@@ -368,7 +393,8 @@ static int publish_association(bool hosting)
 			}
 		}
 	}
-	wex_window_finish(&win);
+	if (child_alive) wex_window_finish(&child);
+	if (main_alive) wex_window_finish(&win);
 	wex_context_finish(&native);
 	wl_display_disconnect(owner.ctx.display);
 	return 0;

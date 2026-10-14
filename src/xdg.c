@@ -433,6 +433,7 @@ handle_destroy(struct wl_listener *listener, void *data)
 
 	/* Remove xdg-shell view specific listeners */
 	wl_list_remove(&xdg_toplevel_view->set_app_id.link);
+	wl_list_remove(&xdg_toplevel_view->set_parent.link);
 	wl_list_remove(&xdg_toplevel_view->request_show_window_menu.link);
 	wl_list_remove(&xdg_toplevel_view->new_popup.link);
 	wl_list_remove(&xdg_toplevel_view->new_subsurface.link);
@@ -811,21 +812,29 @@ xdg_toplevel_view_get_string_prop(struct view *view, const char *prop)
 }
 
 static void
+update_foreign_parent(struct view *view)
+{
+	struct wlr_xdg_toplevel *toplevel = xdg_toplevel_from_view(view);
+	struct view *parent = toplevel->parent ? toplevel->parent->base->data : NULL;
+	if (view->foreign_toplevel) {
+		foreign_toplevel_set_parent(view->foreign_toplevel,
+			parent ? parent->foreign_toplevel : NULL);
+	}
+}
+
+static void
+handle_set_parent(struct wl_listener *listener, void *data)
+{
+	struct xdg_toplevel_view *xdg_view = wl_container_of(listener, xdg_view, set_parent);
+	update_foreign_parent(&xdg_view->base);
+}
+
+static void
 init_foreign_toplevel(struct view *view)
 {
 	assert(!view->foreign_toplevel);
 	view->foreign_toplevel = foreign_toplevel_create(view);
-
-	struct wlr_xdg_toplevel *toplevel = xdg_toplevel_from_view(view);
-	if (!toplevel->parent) {
-		return;
-	}
-	struct wlr_xdg_surface *surface = toplevel->parent->base;
-	struct view *parent = surface->data;
-	if (!parent->foreign_toplevel) {
-		return;
-	}
-	foreign_toplevel_set_parent(view->foreign_toplevel, parent->foreign_toplevel);
+	update_foreign_parent(view);
 }
 
 static void
@@ -1125,6 +1134,7 @@ xdg_toplevel_new(struct wl_listener *listener, void *data)
 
 	/* Events specific to XDG toplevel views */
 	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, set_app_id);
+	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, set_parent);
 	CONNECT_SIGNAL(toplevel, xdg_toplevel_view, request_show_window_menu);
 	CONNECT_SIGNAL(xdg_surface, xdg_toplevel_view, new_popup);
 
