@@ -5,13 +5,14 @@
 #include <string.h>
 #include "shm-common.h"
 #include "wex-window-v1-client-protocol.h"
+#include "xx-zones-v1-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 
 struct item {
 	struct zwlr_foreign_toplevel_handle_v1 *handle;
 	struct wex_foreign_window_v1 *foreign;
 	char title[128], token[33];
-	int width, height, min_width, min_height;
+	int x, y, width, height, min_width, min_height;
 	unsigned mode, done, states;
 	bool closed, foreign_closed;
 };
@@ -33,6 +34,8 @@ static void geometry(void *data, struct wex_foreign_window_v1 *obj,
 		int32_t x, int32_t y, int32_t width, int32_t height)
 {
 	struct item *item = data;
+	item->x = x;
+	item->y = y;
 	item->width = width;
 	item->height = height;
 }
@@ -166,6 +169,23 @@ int main(void)
 	wex_foreign_window_v1_refresh(a->foreign);
 	pump(&first);
 	assert(a->done > before);
+	struct xx_zone_v1 *zone = xx_zone_manager_v1_get_zone(native.zone_manager, NULL);
+	csd.zone_item = xx_zone_manager_v1_get_zone_item(native.zone_manager, csd.xdg_toplevel);
+	xx_zone_v1_add_item(zone, csd.zone_item);
+	xx_zone_item_v1_set_position(csd.zone_item, 317, 229);
+	wl_surface_commit(csd.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&first);
+	assert(a->x == 317 && a->y == 229);
+	zxdg_toplevel_decoration_v1_set_mode(ssd.deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&first);
+	assert(b->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_CLIENT);
+	zxdg_toplevel_decoration_v1_set_mode(ssd.deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&first);
+	assert(b->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
+	puts("PASS live logical geometry and decoration changes");
 	xdg_toplevel_set_title(csd.xdg_toplevel, "L2 renamed");
 	assert(wl_display_roundtrip(native.display) >= 0);
 	pump(&first);
@@ -198,6 +218,7 @@ int main(void)
 	wex_window_finish(&csd);
 	wex_window_finish(&ssd);
 	wex_window_finish(&late);
+	xx_zone_v1_destroy(zone);
 	assert(wl_display_roundtrip(native.display) >= 0);
 	pump(&first);
 	assert(a->closed && a->foreign_closed && b->closed && b->foreign_closed && c->foreign_closed);

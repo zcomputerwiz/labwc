@@ -1660,6 +1660,9 @@ view_set_ssd_mode(struct view *view, enum ssd_mode mode)
 
 	if (view->shaded || view->fullscreen
 			|| mode == view_get_ssd_mode(view)) {
+		/* A client may change its decoration preference even when the
+		 * effective SSD mode is unchanged or temporarily hidden. */
+		wex_foreign_window_update(view);
 		return;
 	}
 
