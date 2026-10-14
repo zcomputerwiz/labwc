@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include "shm-common.h"
 #include "wex-window-v1-client-protocol.h"
 #include "xx-zones-v1-client-protocol.h"
@@ -167,9 +168,11 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 	assert(wl_display_roundtrip(ctx->display) >= 0);
 }
 static int association_test(void);
+static int publish_association(void);
 int main(int argc, char **argv)
 {
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
+	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association();
 	struct wex_context native;
 	struct wex_window_obj csd, ssd, late, frame;
 	struct observer first = {0}, second = {0};
@@ -257,6 +260,48 @@ int main(int argc, char **argv)
 	wex_context_finish(&native);
 	wl_display_disconnect(first.ctx.display);
 	puts("FOREIGN_OBSERVATION_PASSED");
+	return 0;
+}
+
+static int publish_association(void)
+{
+	struct wex_context native;
+	struct wex_window_obj win;
+	struct observer owner = {.protocol_version = 4};
+	assert(wex_context_init(&native, "wayland-0"));
+	map(&win, &native, "L2 Wine association peer", false);
+	observe(&owner);
+	struct item *item = find(&owner, "L2 Wine association peer");
+	printf("LEASE %s %s\n", item->token, item->controller);
+	fflush(stdout);
+	for (;;) {
+		struct pollfd fds[] = {
+			{wl_display_get_fd(native.display), POLLIN, 0},
+			{wl_display_get_fd(owner.ctx.display), POLLIN, 0},
+			{0, POLLIN, 0},
+		};
+		assert(wl_display_dispatch_pending(native.display) >= 0);
+		assert(wl_display_dispatch_pending(owner.ctx.display) >= 0);
+		wl_display_flush(native.display);
+		wl_display_flush(owner.ctx.display);
+		if (poll(fds, 3, -1) < 0) return 1;
+		if (fds[0].revents & POLLIN) assert(wl_display_dispatch(native.display) >= 0);
+		if (fds[1].revents & POLLIN) assert(wl_display_dispatch(owner.ctx.display) >= 0);
+		if (fds[2].revents & (POLLIN | POLLHUP)) {
+			char command[32];
+			if (!fgets(command, sizeof(command), stdin) || !strcmp(command,"quit\n")) break;
+			if (!strcmp(command,"release\n") && item->foreign) {
+				wex_foreign_window_v1_destroy(item->foreign);
+				item->foreign = NULL;
+				pump(&owner);
+				puts("RELEASED");
+				fflush(stdout);
+			}
+		}
+	}
+	wex_window_finish(&win);
+	wex_context_finish(&native);
+	wl_display_disconnect(owner.ctx.display);
 	return 0;
 }
 
