@@ -20,7 +20,7 @@ struct item {
 	struct wex_foreign_window_v1 *foreign;
 	char title[128], token[33], controller[33];
 	int x, y, width, height, min_width, min_height;
-	unsigned mode, done, states;
+	unsigned mode, done, states, decoration_downgrades;
 	bool closed, foreign_closed;
 };
 struct observer {
@@ -64,7 +64,10 @@ static void geometry(void *data, struct wex_foreign_window_v1 *obj,
 }
 static void decoration(void *data, struct wex_foreign_window_v1 *obj, uint32_t mode)
 {
-	((struct item *)data)->mode = mode;
+	struct item *item = data;
+	if (item->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER && mode != item->mode)
+		item->decoration_downgrades++;
+	item->mode = mode;
 }
 static void hints(void *data, struct wex_foreign_window_v1 *obj,
 		int32_t min_width, int32_t min_height, int32_t width_inc,
@@ -277,6 +280,7 @@ static int publish_association(bool hosting)
 	struct wex_context native;
 	struct wex_window_obj win;
 	struct observer owner = {.protocol_version = 4};
+	struct zwlr_virtual_pointer_v1 *pointer = NULL;
 	assert(wex_context_init(&native, "wayland-0"));
 	map(&win, &native, "L2 Wine association peer", hosting);
 	observe(&owner);
@@ -284,6 +288,7 @@ static int publish_association(bool hosting)
 	printf("LEASE %s %s\n", item->token, item->controller);
 	fflush(stdout);
 	for (;;) {
+		if (win.closed) break;
 		struct pollfd fds[] = {
 			{wl_display_get_fd(native.display), POLLIN, 0},
 			{wl_display_get_fd(owner.ctx.display), POLLIN, 0},
@@ -304,6 +309,48 @@ static int publish_association(bool hosting)
 				item->foreign = NULL;
 				pump(&owner);
 				puts("RELEASED");
+				fflush(stdout);
+			}
+			if (!strcmp(command,"title\n")) {
+				xdg_toplevel_set_title(win.xdg_toplevel,"L2 Shell renamed");
+				wl_display_roundtrip(native.display);
+			}
+			if (!strcmp(command,"resize\n")) {
+				struct wex_buffer old = win.buffer;
+				assert(wex_buffer_create(&native,&win.buffer,260,200,0xff338855));
+				win.width=260; win.height=200;
+				xdg_surface_set_window_geometry(win.xdg_surface,0,0,260,200);
+				wex_window_commit_buffer(&win);
+				assert(wl_display_roundtrip(native.display)>=0);
+				wex_buffer_destroy(&old);
+			}
+			if (!strcmp(command,"csd\n") || !strcmp(command,"ssd\n")) {
+				zxdg_toplevel_decoration_v1_set_mode(win.deco,!strcmp(command,"csd\n") ?
+					ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE : ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+				wl_surface_commit(win.surface);
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
+			if (!strcmp(command,"minimize\n")) zwlr_foreign_toplevel_handle_v1_set_minimized(item->handle);
+			if (!strcmp(command,"restore\n")) zwlr_foreign_toplevel_handle_v1_unset_minimized(item->handle);
+			if (!strcmp(command,"state\n")) {
+				pump(&owner);
+				printf("STATE %u\n",!!(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)));
+				fflush(stdout);
+			}
+			int click_x, click_y;
+			if (sscanf(command,"click %d %d",&click_x,&click_y) == 2) {
+				if (!pointer) pointer=zwlr_virtual_pointer_manager_v1_create_virtual_pointer(
+					owner.ctx.virtual_pointer_manager,owner.ctx.seat);
+				zwlr_virtual_pointer_v1_motion_absolute(pointer,0,click_x,click_y,1280,720);
+				zwlr_virtual_pointer_v1_frame(pointer);
+				zwlr_virtual_pointer_v1_button(pointer,0,BTN_LEFT,WL_POINTER_BUTTON_STATE_PRESSED);
+				zwlr_virtual_pointer_v1_frame(pointer);
+				zwlr_virtual_pointer_v1_button(pointer,0,BTN_LEFT,WL_POINTER_BUTTON_STATE_RELEASED);
+				zwlr_virtual_pointer_v1_frame(pointer);
+				pump(&owner);
+				assert(wl_display_roundtrip(native.display)>=0);
+				printf("CLICK %u %u %d\n",native.keyboard_focus_surface==win.surface,
+					native.pointer_focus_surface==win.surface,native.button_event_count);
 				fflush(stdout);
 			}
 		}
@@ -580,6 +627,8 @@ static int scene_test(void)
 	wex_window_v1_configure_foreign(frame.wex_win, 10, 20, 40, 240, 180);
 	scene_pump(&bridge, &native);
 	assert(status.configured_serial == 10 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	pump(&owner);
+	assert(item->decoration_downgrades == 0);
 	wex_window_v1_uncommit_foreign(frame.wex_win, 11);
 	scene_pump(&bridge, &native);
 	assert(status.configured_serial == 11 && status.configured_status == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);

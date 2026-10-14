@@ -296,6 +296,11 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 	wl_signal_add(&native->server->seat.seat->keyboard_state.events.focus_change, &scene->focus_change);
 	scene->native_commit.notify = native_committed;
 	wl_signal_add(&native->surface->events.commit, &scene->native_commit);
+	/* Decoration observers must see the prepared replacement before SSD is
+	 * hidden. Otherwise an intermediate NONE snapshot looks like a CSD change
+	 * to a shell, even though the following snapshot reports SERVER again.
+	 * All allocations/listeners are ready and no fallible operation remains. */
+	frame->scene = scene;
 	view_set_ssd_mode(native, LAB_SSD_MODE_NONE);
 	wlr_scene_node_reparent(&native->scene_tree->node, view->scene_tree);
 	struct wlr_box geometry = {0};
