@@ -3,6 +3,7 @@ stack-client
 alpha-client
 warp-client
 policy-client
+foreign-client
 *.o
 *-protocol.c
 *-protocol.h

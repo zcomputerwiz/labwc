@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/util/log.h>
 #include "protocols/wex-window.h"
 #include "protocols/xx-zones.h"
@@ -15,6 +16,7 @@
 #include "view.h"
 #include "workspaces.h"
 #include "common/mem.h"
+#include "foreign-toplevel-internal.h"
 
 static const struct wex_window_manager_v1_interface wex_manager_impl;
 static const struct wex_window_v1_interface wex_window_impl;
@@ -34,6 +36,147 @@ generate_window_handle(char handle[33])
 }
 
 static void wex_window_resource_destroy(struct wl_resource *resource);
+
+struct wex_foreign_window {
+	struct wl_list link;
+	struct wex_window_manager *manager;
+	struct view *view;
+	struct wl_resource *resource;
+	struct wl_listener toplevel_destroy;
+};
+
+static void
+foreign_send_snapshot(struct wex_foreign_window *foreign)
+{
+	struct view *view = foreign->view;
+	if (!view) {
+		return;
+	}
+	uint32_t mode = WEX_FOREIGN_WINDOW_V1_DECORATION_NONE;
+	if (view->ssd_preference == LAB_SSD_PREF_CLIENT) {
+		mode = WEX_FOREIGN_WINDOW_V1_DECORATION_CLIENT;
+	} else if (view_get_ssd_mode(view) != LAB_SSD_MODE_NONE) {
+		mode = WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER;
+	}
+	struct view_size_hints hints = view_get_size_hints(view);
+	wex_foreign_window_v1_send_geometry(foreign->resource,
+		view->current.x, view->current.y, view->current.width,
+		view->current.height);
+	wex_foreign_window_v1_send_decoration(foreign->resource, mode);
+	wex_foreign_window_v1_send_size_hints(foreign->resource,
+		hints.min_width, hints.min_height, hints.width_inc, hints.height_inc,
+		hints.base_width, hints.base_height);
+	wex_foreign_window_v1_send_done(foreign->resource);
+}
+
+void
+wex_foreign_window_update(struct view *view)
+{
+	struct wex_window_manager *manager = view->server->wex_window_manager;
+	if (!manager) {
+		return;
+	}
+	struct wex_foreign_window *foreign;
+	wl_list_for_each(foreign, &manager->foreign_windows, link) {
+		if (foreign->view == view) {
+			foreign_send_snapshot(foreign);
+		}
+	}
+}
+
+static void
+foreign_resource_destroy(struct wl_resource *resource)
+{
+	struct wex_foreign_window *foreign = wl_resource_get_user_data(resource);
+	if (foreign->view) {
+		wl_list_remove(&foreign->toplevel_destroy.link);
+	}
+	wl_list_remove(&foreign->link);
+	free(foreign);
+}
+
+static void
+handle_foreign_toplevel_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_foreign_window *foreign =
+		wl_container_of(listener, foreign, toplevel_destroy);
+	wl_list_remove(&foreign->toplevel_destroy.link);
+	foreign->view = NULL;
+	wex_foreign_window_v1_send_closed(foreign->resource);
+}
+
+static void
+handle_foreign_destroy(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void
+handle_foreign_refresh(struct wl_client *client, struct wl_resource *resource)
+{
+	foreign_send_snapshot(wl_resource_get_user_data(resource));
+}
+
+static const struct wex_foreign_window_v1_interface foreign_impl = {
+	.destroy = handle_foreign_destroy,
+	.refresh = handle_foreign_refresh,
+};
+
+static void
+handle_manager_get_foreign(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id,
+		struct wl_resource *toplevel_resource)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	struct view *view, *found = NULL;
+	/* wlroots exposes the handle resource list. Resolve by resource identity,
+	 * rather than depending on its implementation-private user data layout. */
+	wl_list_for_each(view, &manager->server->views, link) {
+		if (view_is_wex(view) || !view->foreign_toplevel
+				|| !view->foreign_toplevel->wlr_toplevel.handle) {
+			continue;
+		}
+		struct wl_resource *candidate;
+		wl_resource_for_each(candidate,
+				&view->foreign_toplevel->wlr_toplevel.handle->resources) {
+			if (candidate == toplevel_resource) {
+				found = view;
+				break;
+			}
+		}
+		if (found) {
+			break;
+		}
+	}
+	struct wex_foreign_window *foreign = znew(*foreign);
+	foreign->manager = manager;
+	foreign->resource = wl_resource_create(client,
+		&wex_foreign_window_v1_interface, 1, id);
+	if (!foreign->resource) {
+		free(foreign);
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(foreign->resource, &foreign_impl,
+		foreign, foreign_resource_destroy);
+	wl_list_insert(manager->foreign_windows.prev, &foreign->link);
+	if (!found) {
+		wex_foreign_window_v1_send_closed(foreign->resource);
+		return;
+	}
+	if (!found->wex_foreign_token[0]
+			&& !generate_window_handle(found->wex_foreign_token)) {
+		wl_client_post_implementation_error(client, "cannot generate native token");
+		return;
+	}
+	foreign->view = found;
+	foreign->toplevel_destroy.notify = handle_foreign_toplevel_destroy;
+	wl_signal_add(&found->foreign_toplevel->events.toplevel_destroy,
+		&foreign->toplevel_destroy);
+	wex_foreign_window_v1_send_token(foreign->resource,
+		found->wex_foreign_token);
+	foreign_send_snapshot(foreign);
+}
 
 bool
 wex_client_is_privileged(const struct wl_client *client, struct server *server)
@@ -107,6 +250,7 @@ handle_manager_get_window(struct wl_client *client,
 static const struct wex_window_manager_v1_interface wex_manager_impl = {
 	.destroy = handle_manager_destroy,
 	.get_window = handle_manager_get_window,
+	.get_foreign = handle_manager_get_foreign,
 };
 
 static void
@@ -354,9 +498,10 @@ wex_window_manager_init(struct server *server)
 	struct wex_window_manager *manager = znew(*manager);
 	manager->server = server;
 	wl_list_init(&manager->windows);
+	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 2, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 3, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
@@ -378,6 +523,10 @@ wex_window_manager_finish(struct server *server)
 	}
 
 	struct wex_window *win, *win_tmp;
+	struct wex_foreign_window *foreign, *foreign_tmp;
+	wl_list_for_each_safe(foreign, foreign_tmp, &manager->foreign_windows, link) {
+		wl_resource_destroy(foreign->resource);
+	}
 	wl_list_for_each_safe(win, win_tmp, &manager->windows, link) {
 		if (win->view) {
 			win->view->wex_window = NULL;

@@ -106,6 +106,9 @@ run_check "Socket Isolation (wex_window_manager_v1 privileged)" \
 run_check "Shared handles across three clients and layer/lifetime invariants" \
     python3 "$SCRIPT_DIR/check-handles.py"
 
+run_check "Native supplemental observation, controls and lifetime" \
+    "$SCRIPT_DIR/foreign-client"
+
 # TEST 2: xx-zones-v1 Window Placement
 echo "Testing xx-zones-v1 explicit placement and centering bypass..."
 "$SCRIPT_DIR/zones-client" \

@@ -14,6 +14,7 @@ struct wex_window_manager {
 	struct wl_global *global;
 	struct server *server;
 	struct wl_list windows;    /* struct wex_window.link */
+	struct wl_list foreign_windows; /* supplemental observers */
 	struct wl_listener display_destroy;
 };
 
@@ -31,6 +32,7 @@ struct wex_window {
 void wex_window_manager_init(struct server *server);
 void wex_window_manager_finish(struct server *server);
 void wex_window_on_view_destroy(struct wex_window *win);
+void wex_foreign_window_update(struct view *view);
 bool wex_client_is_privileged(const struct wl_client *client, struct server *server);
 
 #endif /* LABWC_PROTOCOLS_WEX_WINDOW_H */

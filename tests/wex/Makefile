@@ -11,6 +11,7 @@ TOP_PROTOCOLS_DIR ?= ../../protocols
 PROTO_GEN_C = \
 	xx-zones-v1-protocol.c \
 	wex-window-v1-protocol.c \
+	wlr-foreign-toplevel-management-unstable-v1-protocol.c \
 	pointer-warp-v1-protocol.c \
 	alpha-modifier-v1-protocol.c \
 	xdg-shell-protocol.c \
@@ -21,6 +22,7 @@ PROTO_GEN_C = \
 PROTO_GEN_H = \
 	xx-zones-v1-client-protocol.h \
 	wex-window-v1-client-protocol.h \
+	wlr-foreign-toplevel-management-unstable-v1-client-protocol.h \
 	pointer-warp-v1-client-protocol.h \
 	alpha-modifier-v1-client-protocol.h \
 	xdg-shell-client-protocol.h \
@@ -31,7 +33,7 @@ PROTO_GEN_H = \
 PROTO_OBJS = $(PROTO_GEN_C:.c=.o)
 COMMON_OBJS = shm-common.o $(PROTO_OBJS)
 
-TARGETS = zones-client stack-client alpha-client warp-client policy-client handle-client
+TARGETS = zones-client stack-client alpha-client warp-client policy-client handle-client foreign-client
 
 all: $(TARGETS)
 
@@ -45,6 +47,12 @@ wex-window-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/wex-window-v1.xml
 	$(WAYLAND_SCANNER) client-header $< $@
 
 wex-window-v1-protocol.c: $(TOP_PROTOCOLS_DIR)/wex-window-v1.xml
+	$(WAYLAND_SCANNER) private-code $< $@
+
+wlr-foreign-toplevel-management-unstable-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/wlr-foreign-toplevel-management-unstable-v1.xml
+	$(WAYLAND_SCANNER) client-header $< $@
+
+wlr-foreign-toplevel-management-unstable-v1-protocol.c: $(TOP_PROTOCOLS_DIR)/wlr-foreign-toplevel-management-unstable-v1.xml
 	$(WAYLAND_SCANNER) private-code $< $@
 
 pointer-warp-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/pointer-warp-v1.xml
@@ -85,6 +93,9 @@ stack-client: stack-client.o $(COMMON_OBJS)
 
 handle-client: handle-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -o $@ $^ $(LIBS)
+
+foreign-client: foreign-client.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 alpha-client: alpha-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)

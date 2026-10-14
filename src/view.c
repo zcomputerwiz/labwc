@@ -610,6 +610,7 @@ view_moved(struct view *view)
 	if (view->zone_item) {
 		lab_zone_item_notify_moved(view->zone_item);
 	}
+	wex_foreign_window_update(view);
 }
 
 void
@@ -1679,6 +1680,7 @@ view_set_ssd_mode(struct view *view, enum ssd_mode mode)
 	if (!view_is_floating(view)) {
 		view_apply_special_geometry(view);
 	}
+	wex_foreign_window_update(view);
 }
 
 void
