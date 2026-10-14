@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="5">
+  <interface name="wex_window_manager_v1" version="6">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -68,7 +68,7 @@
     </event>
   </interface>
 
-  <interface name="wex_window_v1" version="5">
+  <interface name="wex_window_v1" version="6">
     <description summary="window controls interface">
       Provides operations for stacking, layering, shell edge reservation,
       and direct activation.
@@ -194,6 +194,37 @@
     </request>
     <event name="foreign_group" since="5">
       <arg name="status" type="uint" enum="group_status"/>
+    </event>
+    <enum name="focus_target" since="6">
+      <entry name="none" value="0" summary="query only, or focus outside this group"/>
+      <entry name="native" value="1" summary="activate native content"/>
+      <entry name="frame" value="2" summary="temporary frame keyboard focus"/>
+      <entry name="restore_native" value="3" summary="guarded native focus restoration, request only"/>
+    </enum>
+    <request name="set_foreign_focus" since="6">
+      <description summary="request physical focus with a client activation epoch">
+        Requests apply only to an active group. Native activates and raises the
+        group. Frame and restore_native apply only while physical focus already
+        belongs to this group, so a late frame-menu completion cannot steal
+        focus from another application. None queries without changing focus.
+        Every request replies with foreign_focus reporting actual focus and
+        echoing epoch, even if the requested transition was rejected. Unknown
+        targets leave focus unchanged. The client must also check its current
+        logical foreground window before restoring native focus.
+      </description>
+      <arg name="epoch" type="uint"/>
+      <arg name="target" type="uint" enum="focus_target"/>
+    </request>
+    <event name="foreign_focus" since="6">
+      <description summary="observed physical keyboard focus for this group">
+        Sent after requests and on seat keyboard focus changes, including
+        native popups and frame subsurfaces. Epoch is the most recent request's
+        epoch, or zero before the first request. Target is none, native or frame;
+        restore_native is never reported. Detached groups report none. This
+        event acknowledges physical focus, not a Win32 foreground transition.
+      </description>
+      <arg name="epoch" type="uint"/>
+      <arg name="target" type="uint" enum="focus_target"/>
     </event>
   </interface>
   <interface name="wex_foreign_window_v1" version="4">

@@ -162,12 +162,13 @@ static void
 keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
 		uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
 {
-	(void)data;
+	struct wex_context *ctx = data;
+	ctx->last_key = key;
+	ctx->last_key_state = state;
+	ctx->key_event_count++;
 	(void)keyboard;
 	(void)serial;
 	(void)time;
-	(void)key;
-	(void)state;
 }
 
 static void

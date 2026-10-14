@@ -27,6 +27,7 @@ struct wex_scene {
 	struct buffer_watch root, native_root, ring[4];
 	struct wlr_box pieces[4];
 	struct wl_listener commit, native_frame_done;
+	struct wl_listener focus_change;
 	enum ssd_mode restore_decor;
 	bool state_sync;
 };
@@ -188,6 +189,35 @@ native_frame_done(struct wl_listener *listener, void *data)
 	}
 }
 
+static struct wlr_surface *
+focus_toplevel(struct wlr_surface *surface)
+{
+	while (surface) {
+		surface = wlr_surface_get_root_surface(surface);
+		struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+		if (!xdg || xdg->role != WLR_XDG_SURFACE_ROLE_POPUP) return surface;
+		surface = xdg->popup->parent;
+	}
+	return NULL;
+}
+
+uint32_t
+wex_scene_focus_target(struct wex_scene *scene)
+{
+	struct wlr_surface *surface = focus_toplevel(scene->native->server->seat.seat->keyboard_state.focused_surface);
+	if (!surface) return WEX_WINDOW_V1_FOCUS_TARGET_NONE;
+	if (surface == scene->native->surface) return WEX_WINDOW_V1_FOCUS_TARGET_NATIVE;
+	if (surface == scene->frame->view->surface) return WEX_WINDOW_V1_FOCUS_TARGET_FRAME;
+	return WEX_WINDOW_V1_FOCUS_TARGET_NONE;
+}
+
+static void
+focus_changed(struct wl_listener *listener, void *data)
+{
+	struct wex_scene *scene = wl_container_of(listener, scene, focus_change);
+	wex_window_send_foreign_focus(scene->frame);
+}
+
 struct wex_scene *
 wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr_box *client)
 {
@@ -247,6 +277,8 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 	scene->native_frame_done.notify = native_frame_done;
 	wl_signal_add(&native_root->events.frame_done, &scene->native_frame_done);
 	scene->native_root.extra = &scene->native_frame_done;
+	scene->focus_change.notify = focus_changed;
+	wl_signal_add(&native->server->seat.seat->keyboard_state.events.focus_change, &scene->focus_change);
 	view_set_ssd_mode(native, LAB_SSD_MODE_NONE);
 	wlr_scene_node_reparent(&native->scene_tree->node, view->scene_tree);
 	struct wlr_box geometry = {0};
@@ -260,6 +292,7 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 void
 wex_scene_destroy(struct wex_scene *scene)
 {
+	wl_list_remove(&scene->focus_change.link);
 	struct view *native = scene->native;
 	struct wlr_scene_tree *parent = scene->restore_parent;
 	if (!parent) parent = native->server->workspaces.current->tree;

@@ -40,6 +40,15 @@ generate_window_handle(char handle[33])
 
 static void wex_window_resource_destroy(struct wl_resource *resource);
 
+void
+wex_window_send_foreign_focus(struct wex_window *frame)
+{
+	if (wl_resource_get_version(frame->resource) >= 6) {
+		wex_window_v1_send_foreign_focus(frame->resource, frame->focus_epoch,
+			frame->scene ? wex_scene_focus_target(frame->scene) : WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	}
+}
+
 struct wex_foreign_window {
 	struct wl_list link;
 	struct wex_window_manager *manager;
@@ -62,6 +71,7 @@ release_foreign_association(struct wex_window *frame, bool notify)
 		frame->scene = NULL;
 		wex_scene_destroy(scene);
 		if (notify && frame->view) {
+			wex_window_send_foreign_focus(frame);
 			wex_window_v1_send_foreign_group(frame->resource,
 				WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
 		}
@@ -84,6 +94,7 @@ wex_window_drop_scene(struct wex_window *frame)
 	if (!scene) return;
 	frame->scene = NULL;
 	wex_scene_destroy(scene);
+	wex_window_send_foreign_focus(frame);
 	if (frame->view) wex_window_v1_send_foreign_group(frame->resource,
 		WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
 }
@@ -555,6 +566,27 @@ handle_wex_window_commit_foreign(struct wl_client *client, struct wl_resource *r
 	}
 	wex_window_v1_send_foreign_group(resource, frame->scene && wex_scene_matches(frame->scene, &rect) ?
 		WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+	wex_window_send_foreign_focus(frame);
+}
+
+static void
+handle_wex_window_set_foreign_focus(struct wl_client *client, struct wl_resource *resource,
+		uint32_t epoch, uint32_t target)
+{
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	frame->focus_epoch = epoch;
+	if (frame->scene) {
+		uint32_t current = wex_scene_focus_target(frame->scene);
+		if (target == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE) {
+			desktop_focus_view_forced(wex_scene_native(frame->scene), true);
+		} else if (current != WEX_WINDOW_V1_FOCUS_TARGET_NONE) {
+			if (target == WEX_WINDOW_V1_FOCUS_TARGET_FRAME)
+				desktop_focus_view_forced(frame->view, false);
+			else if (target == WEX_WINDOW_V1_FOCUS_TARGET_RESTORE_NATIVE)
+				desktop_focus_view_forced(wex_scene_native(frame->scene), false);
+		}
+	}
+	wex_window_send_foreign_focus(frame);
 }
 
 static const struct wex_window_v1_interface wex_window_impl = {
@@ -570,6 +602,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
     .restore = handle_wex_window_restore,
 	.associate_foreign = handle_wex_window_associate_foreign,
 	.commit_foreign = handle_wex_window_commit_foreign,
+	.set_foreign_focus = handle_wex_window_set_foreign_focus,
 };
 
 static void
@@ -643,7 +676,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 5, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 6, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);

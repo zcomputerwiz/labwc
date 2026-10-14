@@ -32,6 +32,7 @@ struct wex_window {
 	uint32_t layer;
 	uint32_t exclusive_edge;
 	uint32_t exclusive_size;
+	uint32_t focus_epoch;
 };
 
 void wex_window_manager_init(struct server *server);
@@ -49,5 +50,7 @@ bool wex_scene_matches(struct wex_scene *scene, const struct wlr_box *client);
 void wex_window_drop_scene(struct wex_window *frame);
 void wex_scene_view_minimized(struct view *view, bool minimized);
 bool wex_scene_server_decorated(struct wex_scene *scene);
+uint32_t wex_scene_focus_target(struct wex_scene *scene);
+void wex_window_send_foreign_focus(struct wex_window *frame);
 
 #endif /* LABWC_PROTOCOLS_WEX_WINDOW_H */

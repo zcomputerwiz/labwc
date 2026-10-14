@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#define _GNU_SOURCE
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,7 +7,9 @@
 #include <poll.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
 #include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon.h>
 #include "shm-common.h"
 #include "wex-window-v1-client-protocol.h"
 #include "xx-zones-v1-client-protocol.h"
@@ -310,7 +313,7 @@ static int publish_association(void)
 	return 0;
 }
 
-struct frame_status { unsigned status, replies, group, group_replies; };
+struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies; };
 static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
 static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 {
@@ -324,9 +327,18 @@ static void group(void *data, struct wex_window_v1 *obj, uint32_t status)
 	frame->group = status;
 	frame->group_replies++;
 }
+static void foreign_focus(void *data, struct wex_window_v1 *obj, uint32_t epoch, uint32_t target)
+{
+	struct frame_status *frame = data;
+	assert(target <= WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	frame->epoch = epoch;
+	frame->focus = target;
+	frame->focus_replies++;
+}
 static const struct wex_window_v1_listener frame_listener = {
 	.handle = frame_handle, .foreign_association = association,
 	.foreign_group = group,
+	.foreign_focus = foreign_focus,
 };
 static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
 		struct frame_status *status)
@@ -472,11 +484,47 @@ static void scene_click(struct observer *bridge, struct wex_context *native,
 	zwlr_virtual_pointer_v1_frame(pointer);
 	scene_pump(bridge, native);
 }
+static struct zwp_virtual_keyboard_v1 *scene_keyboard(struct observer *bridge)
+{
+	struct xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	assert(ctx);
+	struct xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+	assert(keymap);
+	char *text = xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
+	assert(text);
+	size_t size = strlen(text) + 1;
+	int fd = memfd_create("wex-focus-keymap", MFD_CLOEXEC);
+	assert(fd >= 0 && write(fd, text, size) == (ssize_t)size);
+	struct zwp_virtual_keyboard_v1 *keyboard = zwp_virtual_keyboard_manager_v1_create_virtual_keyboard(
+		bridge->ctx.virtual_keyboard_manager, bridge->ctx.seat);
+	assert(keyboard);
+	zwp_virtual_keyboard_v1_keymap(keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
+	close(fd);
+	free(text);
+	xkb_keymap_unref(keymap);
+	xkb_context_unref(ctx);
+	pump(bridge);
+	return keyboard;
+}
+
+static void scene_key(struct observer *bridge, struct wex_context *native,
+		struct zwp_virtual_keyboard_v1 *keyboard, bool to_native)
+{
+	unsigned native_count = native->key_event_count, frame_count = bridge->ctx.key_event_count;
+	zwp_virtual_keyboard_v1_key(keyboard, 1, KEY_A, WL_KEYBOARD_KEY_STATE_PRESSED);
+	zwp_virtual_keyboard_v1_key(keyboard, 2, KEY_A, WL_KEYBOARD_KEY_STATE_RELEASED);
+	scene_pump(bridge, native);
+	assert(native->key_event_count == native_count + (to_native ? 2 : 0));
+	assert(bridge->ctx.key_event_count == frame_count + (to_native ? 0 : 2));
+	struct wex_context *recipient = to_native ? native : &bridge->ctx;
+	assert(recipient->last_key == KEY_A && recipient->last_key_state == WL_KEYBOARD_KEY_STATE_RELEASED);
+}
+
 static int scene_test(void)
 {
 	struct wex_context native;
 	struct wex_window_obj background, target, frame;
-	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 5};
+	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 6};
 	struct frame_status status = {0};
 	assert(wex_context_init(&native, "wayland-0"));
 	assert(wex_window_init(&background, &native, "L2 scene background", 500, 400, 0xff00ff00));
@@ -543,6 +591,39 @@ static int scene_test(void)
 	scene_pump(&bridge, &native);
 	assert(native.keyboard_focus_surface == target.surface && !bridge.ctx.keyboard_focus_surface);
 	puts("PASS frame-ring/native/input-hole routing and physical native activation");
+	struct zwp_virtual_keyboard_v1 *keyboard = scene_keyboard(&bridge);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 42, WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 42 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_key(&bridge, &native, keyboard, true);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 43, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 43 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	assert(!native.keyboard_focus_surface && bridge.ctx.keyboard_focus_surface == frame.surface);
+	scene_key(&bridge, &native, keyboard, false);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 44, WEX_WINDOW_V1_FOCUS_TARGET_RESTORE_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 44 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	assert(native.keyboard_focus_surface == target.surface && !bridge.ctx.keyboard_focus_surface);
+	scene_key(&bridge, &native, keyboard, true);
+	unsigned focus_replies = status.focus_replies;
+	scene_click(&bridge, &native, pointer, 240, 230);
+	assert(native.keyboard_focus_surface == background.surface);
+	assert(status.focus_replies > focus_replies && status.epoch == 44);
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 45, WEX_WINDOW_V1_FOCUS_TARGET_RESTORE_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 45 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	assert(native.keyboard_focus_surface == background.surface);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 46, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 46 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	assert(!bridge.ctx.keyboard_focus_surface);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 47, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 47 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	assert(native.keyboard_focus_surface == target.surface && !bridge.ctx.keyboard_focus_surface);
+	puts("PASS focus epochs, temporary frame focus, native restoration and stale-menu focus-steal guards");
 	position(&frame, frame_zone, 200, 150);
 	scene_pump(&bridge, &native);
 	wex_window_commit_buffer(&target);
@@ -552,10 +633,12 @@ static int scene_test(void)
 	pump(&owner);
 	assert(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED));
 	scene_pump(&bridge, &native);
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
 	capture_scene("scene-minimized");
 	wex_window_v1_activate(frame.wex_win);
 	scene_pump(&bridge, &native);
 	assert(native.keyboard_focus_surface == target.surface);
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
 	capture_scene("scene-restored");
 	/* The original Wine subsurface tree must render above native content. */
 	struct wl_surface *menu = wl_compositor_create_surface(bridge.ctx.compositor);
@@ -579,6 +662,9 @@ static int scene_test(void)
 	scene_pump(&bridge, &native);
 	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
 	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_UNBOUND);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 48, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(status.epoch == 48 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
 	struct item *remaining = find(&bridge, "L2 scene target");
 	wex_foreign_window_v1_refresh(remaining->foreign);
 	pump(&bridge);
@@ -600,7 +686,7 @@ static int scene_test(void)
 	assert(item && !item->closed && item->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
 	/* Recreate an independent frame, then crash only the native connection. */
 	memset(&bridge, 0, sizeof(bridge));
-	bridge.protocol_version = 5;
+	bridge.protocol_version = 6;
 	observe(&bridge);
 	assert(wex_window_init(&frame, &bridge.ctx, "L2 recovery frame", 300, 240, 0xffff0000));
 	frame.wex_win = wex_window_manager_v1_get_window(bridge.manager, frame.xdg_toplevel);

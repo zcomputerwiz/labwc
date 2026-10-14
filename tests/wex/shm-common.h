@@ -37,6 +37,8 @@ struct wex_context {
 	bool pointer_motion_received;
 	struct wl_surface *pointer_focus_surface;
 	struct wl_surface *keyboard_focus_surface;
+	uint32_t last_key, last_key_state;
+	unsigned key_event_count;
 	uint32_t last_button;
 	uint32_t last_button_state;
 	int button_event_count;
