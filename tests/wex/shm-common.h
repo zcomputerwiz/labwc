@@ -69,6 +69,8 @@ struct wex_window_obj {
 	uint32_t color;
 
 	bool configured;
+	bool defer_configure;
+	uint32_t configure_serial;
 	bool closed;
 	int configured_width;
 	int configured_height;

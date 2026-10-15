@@ -45,6 +45,7 @@ wex_window_release_pointer_capture(struct wex_window *frame)
 {
 	if (frame->manager->pointer_capture != frame) return;
 	frame->manager->pointer_capture = NULL;
+	if (frame->scene) wex_scene_capture_lost(frame->scene);
 	wex_window_v1_send_foreign_pointer_capture(frame->resource, frame->capture_epoch, 0);
 	cursor_update_focus(frame->manager->server);
 }
@@ -665,6 +666,29 @@ handle_wex_window_capture_foreign_pointer(struct wl_client *client, struct wl_re
 	wex_window_v1_send_foreign_pointer_capture(resource, epoch, allowed);
 }
 
+static void
+handle_wex_window_resize_foreign(struct wl_client *client, struct wl_resource *resource,
+		uint32_t serial, uint32_t edges, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct wlr_box rect = {x, y, width, height};
+	wex_scene_resize(wl_resource_get_user_data(resource), serial, edges, &rect);
+}
+
+static void
+handle_wex_window_commit_foreign_resize(struct wl_client *client, struct wl_resource *resource,
+		uint32_t serial, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct wlr_box rect = {x, y, width, height};
+	wex_scene_commit_resize(wl_resource_get_user_data(resource), serial, &rect);
+}
+
+static void
+handle_wex_window_cancel_foreign_resize(struct wl_client *client, struct wl_resource *resource,
+		uint32_t serial)
+{
+	wex_scene_cancel_resize(wl_resource_get_user_data(resource), serial);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -682,6 +706,9 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.uncommit_foreign = handle_wex_window_uncommit_foreign,
 	.configure_foreign = handle_wex_window_configure_foreign,
 	.capture_foreign_pointer = handle_wex_window_capture_foreign_pointer,
+	.resize_foreign = handle_wex_window_resize_foreign,
+	.commit_foreign_resize = handle_wex_window_commit_foreign_resize,
+	.cancel_foreign_resize = handle_wex_window_cancel_foreign_resize,
 };
 
 static void
@@ -755,7 +782,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 9, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 10, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);

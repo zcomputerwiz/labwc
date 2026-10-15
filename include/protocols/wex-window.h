@@ -35,6 +35,7 @@ struct wex_window {
 	uint32_t exclusive_size;
 	uint32_t focus_epoch;
 	uint32_t capture_epoch;
+	uint32_t resize_serial;
 };
 
 void wex_window_manager_init(struct server *server);
@@ -55,5 +56,11 @@ bool wex_scene_server_decorated(struct wex_scene *scene);
 uint32_t wex_scene_focus_target(struct wex_scene *scene);
 void wex_window_send_foreign_focus(struct wex_window *frame);
 void wex_window_release_pointer_capture(struct wex_window *frame);
+void wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
+	const struct wlr_box *desired);
+void wex_scene_commit_resize(struct wex_window *frame, uint32_t serial,
+	const struct wlr_box *client);
+void wex_scene_cancel_resize(struct wex_window *frame, uint32_t serial);
+void wex_scene_capture_lost(struct wex_scene *scene);
 
 #endif /* LABWC_PROTOCOLS_WEX_WINDOW_H */

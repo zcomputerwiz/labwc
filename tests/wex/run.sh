@@ -128,6 +128,15 @@ run_check "Group restore restores frame" python3 "$SCRIPT_DIR/verify.py" check-p
 run_check "Wine menu subsurface stays above native content" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-menu.png" 270 220 0xFFFFFF00 1
 run_check "Controller loss hides obsolete proxy" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/scene-detached.png" 205 155 0xFF00FF00 1
 
+run_check "Native resize transactions, retained buffers, constraints and rollback" \
+    env WEX_SCENE_TEST_DIR="$OUT_DIR" "$SCRIPT_DIR/foreign-client" --resize
+run_check "Resize retains original frame until both peers commit" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-held.png" 105 105 0xFFFF0000 1
+run_check "Resize retains original native pixels until atomic handover" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-held.png" 150 180 0xFF338855 1
+run_check "Resize publishes new frame at anchored position" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-complete.png" 155 125 0xFFFFFF00 1
+run_check "Resize publishes matching native buffer at anchored position" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-complete.png" 175 165 0xFF0000FF 1
+run_check "Frame-first resize retains original frame pixels" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-frame-first.png" 155 125 0xFFFFFF00 1
+run_check "Frame-first resize retains original native pixels" python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/resize-frame-first.png" 175 165 0xFF0000FF 1
+
 # TEST 2: xx-zones-v1 Window Placement
 echo "Testing xx-zones-v1 explicit placement and centering bypass..."
 "$SCRIPT_DIR/zones-client" \

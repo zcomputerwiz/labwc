@@ -458,7 +458,8 @@ static void
 handle_xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial)
 {
 	struct wex_window_obj *win = data;
-	xdg_surface_ack_configure(xdg_surface, serial);
+	win->configure_serial = serial;
+	if (!win->defer_configure) xdg_surface_ack_configure(xdg_surface, serial);
 	win->configured = true;
 }
 

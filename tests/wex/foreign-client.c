@@ -201,14 +201,17 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 static int association_test(void);
 static int publish_association(bool hosting);
 static int scene_test(void);
+static int resize_test(void);
 static int constraints_test(void);
 static int xwayland_constraints_test(void);
 int main(int argc, char **argv)
 {
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
 	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association(false);
 	if (argc == 2 && !strcmp(argv[1], "--publish-hosting")) return publish_association(true);
 	if (argc == 2 && !strcmp(argv[1], "--scene")) return scene_test();
+	if (argc == 2 && !strcmp(argv[1], "--resize")) return resize_test();
 	if (argc == 2 && !strcmp(argv[1], "--constraints")) return constraints_test();
 	if (argc == 2 && !strcmp(argv[1], "--xwayland-constraints")) return xwayland_constraints_test();
 	struct wex_context native;
@@ -610,7 +613,13 @@ static int publish_association(bool hosting)
 	return 0;
 }
 
-struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies, configured_serial, configured_status, captured, capture_epoch; };
+struct resize_reply { uint32_t serial, stage, configure_serial; int x, y, width, height; };
+struct frame_status {
+	unsigned status, replies, group, group_replies, focus, epoch, focus_replies;
+	unsigned configured_serial, configured_status, captured, capture_epoch;
+	struct resize_reply resize[128];
+	unsigned resize_count;
+};
 static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
 static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 {
@@ -644,12 +653,20 @@ static void foreign_pointer_capture(void *data, struct wex_window_v1 *obj, uint3
 	frame->captured = captured;
 	frame->capture_epoch = epoch;
 }
+static void foreign_resize(void *data, struct wex_window_v1 *obj, uint32_t serial,
+		uint32_t stage, uint32_t configure_serial, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct frame_status *frame = data;
+	assert(frame->resize_count < 128);
+	frame->resize[frame->resize_count++] = (struct resize_reply){serial, stage, configure_serial, x, y, width, height};
+}
 static const struct wex_window_v1_listener frame_listener = {
 	.handle = frame_handle, .foreign_association = association,
 	.foreign_group = group,
 	.foreign_focus = foreign_focus,
 	.configured_foreign = configured_foreign,
 	.foreign_pointer_capture = foreign_pointer_capture,
+	.foreign_resize = foreign_resize,
 };
 static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
 		struct frame_status *status)
@@ -1105,5 +1122,299 @@ static int scene_test(void)
 	wl_display_disconnect(owner.ctx.display);
 	wl_display_disconnect(bridge.ctx.display);
 	puts("FOREIGN_SCENE_PASSED");
+	return 0;
+}
+
+static struct resize_reply *
+resize_find(struct frame_status *status, uint32_t serial, uint32_t stage)
+{
+	for (unsigned i = 0; i < status->resize_count; ++i)
+		if (status->resize[i].serial == serial && status->resize[i].stage == stage)
+			return &status->resize[i];
+	return NULL;
+}
+
+static void
+resize_buffer(struct wex_window_obj *window, int width, int height, uint32_t color)
+{
+	struct wex_buffer old = window->buffer;
+	assert(wex_buffer_create(window->ctx, &window->buffer, width, height, color));
+	window->width = width;
+	window->height = height;
+	xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, width, height);
+	wex_window_commit_buffer(window);
+	assert(wl_display_roundtrip(window->ctx->display) >= 0);
+	wex_buffer_destroy(&old);
+}
+
+static void
+resize_ack_buffer(struct wex_window_obj *target)
+{
+	xdg_surface_ack_configure(target->xdg_surface, target->configure_serial);
+	wex_window_commit_buffer(target);
+	assert(wl_display_roundtrip(target->ctx->display) >= 0);
+}
+
+static void
+resize_wait(struct observer *bridge, struct wex_context *native,
+		struct frame_status *status, uint32_t serial, uint32_t stage)
+{
+	/* Poll a bounded condition rather than assuming timers ran by one exact
+	 * sleep deadline while another VM build may be consuming the CPU. */
+	for (unsigned i = 0; i < 120 && !resize_find(status, serial, stage); ++i) {
+		usleep(50000);
+		scene_pump(bridge, native);
+	}
+	assert(resize_find(status, serial, stage));
+}
+
+static int
+resize_test(void)
+{
+	struct wex_context native;
+	struct wex_window_obj target, frame;
+	struct observer owner = {.protocol_version = 9}, bridge = {.protocol_version = 10};
+	struct frame_status status = {0};
+	assert(wex_context_init(&native, "wayland-0"));
+	map(&target, &native, "L2 resize target", true);
+	observe(&owner);
+	observe(&bridge);
+	struct item *item = find(&owner, "L2 resize target");
+	assert(wex_window_init(&frame, &bridge.ctx, "L2 resize frame", 300, 240, 0xffff0000));
+	frame.wex_win = wex_window_manager_v1_get_window(bridge.manager, frame.xdg_toplevel);
+	wex_window_v1_add_listener(frame.wex_win, &frame_listener, &status);
+	wl_surface_commit(frame.surface);
+	pump(&bridge);
+	wex_window_commit_buffer(&frame);
+	pump(&bridge);
+	struct xx_zone_v1 *zone = xx_zone_manager_v1_get_zone(bridge.ctx.zone_manager, NULL);
+	position(&frame, zone, 100, 100);
+	request_association(&bridge, &frame, &status, item->token, item->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_v1_resize_foreign(frame.wex_win, 1, 5, 80, 90, 400, 300);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 1, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE));
+	wex_window_v1_activate(frame.wex_win);
+	scene_pump(&bridge, &native);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 100, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 100, 1);
+	scene_pump(&bridge, &native);
+	assert(status.captured && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	xdg_toplevel_set_max_size(target.xdg_toplevel, 320, 240);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	target.defer_configure = true;
+	wex_window_v1_resize_foreign(frame.wex_win, 2, 5, 80, 90, 400, 300);
+	scene_pump(&bridge, &native);
+	struct resize_reply *reply = resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
+	assert(reply && reply->x == 160 && reply->y == 150 && reply->width == 320 && reply->height == 240);
+	assert(reply->configure_serial == target.configure_serial);
+	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED));
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 20, 40, 240, 180);
+	pump(&bridge);
+	assert(resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE));
+	xdg_surface_ack_configure(target.xdg_surface, target.configure_serial);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&bridge);
+	assert(resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED));
+	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	/* The native client chooses a different size after acknowledging. */
+	resize_buffer(&target, 310, 230, 0xff0000ff);
+	scene_pump(&bridge, &native);
+	reply = resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY);
+	assert(reply && reply->x == 170 && reply->y == 160 && reply->width == 310 && reply->height == 230);
+	resize_buffer(&frame, 370, 290, 0xffffff00);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	capture_scene("resize-held");
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 21, 40, 310, 230);
+	pump(&bridge);
+	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE && status.captured);
+	capture_scene("resize-complete");
+	puts("PASS constrained left/top anchors, delayed ack/buffer, client-chosen size, retained roots and atomic matching frame");
+
+	/* A new intent must not be completed by the superseded configure's ack. */
+	xdg_toplevel_set_max_size(target.xdg_toplevel, 0, 0);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	wex_window_v1_resize_foreign(frame.wex_win, 3, 10, 170, 160, 330, 250);
+	scene_pump(&bridge, &native);
+	uint32_t old_configure = target.configure_serial;
+	wex_window_v1_resize_foreign(frame.wex_win, 4, 10, 170, 160, 350, 270);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 3, WEX_WINDOW_V1_RESIZE_STAGE_SUPERSEDED));
+	xdg_surface_ack_configure(target.xdg_surface, old_configure);
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	assert(!resize_find(&status, 4, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED));
+	assert(!resize_find(&status, 4, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	wex_window_v1_cancel_foreign_resize(frame.wex_win, 3);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 3, 20, 40, 310, 230);
+	pump(&bridge);
+	assert(resize_find(&status, 3, WEX_WINDOW_V1_RESIZE_STAGE_STALE));
+	wex_window_v1_cancel_foreign_resize(frame.wex_win, 4);
+	scene_pump(&bridge, &native);
+	reply = resize_find(&status, 4, WEX_WINDOW_V1_RESIZE_STAGE_ROLLING_BACK);
+	assert(reply && reply->x == 170 && reply->y == 160 && reply->width == 310 && reply->height == 230);
+	resize_ack_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 4, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 4, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	puts("PASS superseded configure and stale cancel/commit cannot override current rollback");
+
+	/* Fixed clients and independent per-axis limits are read fresh. */
+	xdg_toplevel_set_min_size(target.xdg_toplevel, 310, 230);
+	xdg_toplevel_set_max_size(target.xdg_toplevel, 310, 230);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	wex_window_v1_resize_foreign(frame.wex_win, 5, 10, 170, 160, 500, 400);
+	scene_pump(&bridge, &native);
+	reply = resize_find(&status, 5, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
+	assert(reply && reply->width == 310 && reply->height == 230);
+	resize_ack_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 5, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 5, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	xdg_toplevel_set_min_size(target.xdg_toplevel, 120, 90);
+	xdg_toplevel_set_max_size(target.xdg_toplevel, 0, 240);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	wex_window_v1_resize_foreign(frame.wex_win, 6, 10, 170, 160, 350, 400);
+	scene_pump(&bridge, &native);
+	reply = resize_find(&status, 6, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
+	assert(reply && reply->width == 350 && reply->height == 240);
+	/* Ignore the first configure: timeout must request coherent rollback. */
+	resize_wait(&bridge, &native, &status, 6, WEX_WINDOW_V1_RESIZE_STAGE_ROLLING_BACK);
+	assert(resize_find(&status, 6, WEX_WINDOW_V1_RESIZE_STAGE_ROLLING_BACK));
+	resize_ack_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 6, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 6, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	puts("PASS fixed/one-axis limits and ignored configure bounded rollback");
+
+	wex_window_v1_resize_foreign(frame.wex_win, 7, 10, 170, 160, 350, 240);
+	scene_pump(&bridge, &native);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 101, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 7, WEX_WINDOW_V1_RESIZE_STAGE_ROLLING_BACK));
+	assert(!status.captured);
+	resize_ack_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 7, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 7, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 102, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 102, 1);
+	scene_pump(&bridge, &native);
+	wex_window_v1_resize_foreign(frame.wex_win, 8, 10, 170, 160, 350, 240);
+	scene_pump(&bridge, &native);
+	resize_wait(&bridge, &native, &status, 8, WEX_WINDOW_V1_RESIZE_STAGE_FAILED);
+	assert(resize_find(&status, 8, WEX_WINDOW_V1_RESIZE_STAGE_FAILED));
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED && !status.captured);
+	puts("PASS focus loss cancels without stealing focus; ignored rollback safely detaches and releases capture");
+
+	/* Recover after the explicit safety detach, then exercise each edge and
+	 * corner. The controller serial survives detach/re-adoption. */
+	resize_ack_buffer(&target);
+	xdg_toplevel_set_max_size(target.xdg_toplevel, 0, 0);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_v1_activate(frame.wex_win);
+	scene_pump(&bridge, &native);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 103, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 103, 1);
+	scene_pump(&bridge, &native);
+	assert(status.captured);
+	unsigned edges[] = {1, 2, 4, 8, 5, 9, 6, 10};
+	int x = 170, y = 160, width = 310, height = 230;
+	for (unsigned i = 0; i < 8; ++i) {
+		int w = width + ((edges[i] & 12) ? 2 : 0);
+		int h = height + ((edges[i] & 3) ? 2 : 0);
+		if (edges[i] & 4) x -= 2;
+		if (edges[i] & 1) y -= 2;
+		wex_window_v1_resize_foreign(frame.wex_win, 20 + i, edges[i], x, y, w, h);
+		scene_pump(&bridge, &native);
+		reply = resize_find(&status, 20 + i, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
+		assert(reply && reply->x == x && reply->y == y && reply->width == w && reply->height == h);
+		/* Frame-first as well as native-first commits must keep old pixels. */
+		resize_buffer(&frame, w + 60, h + 60, 0xff00ffff);
+		scene_pump(&bridge, &native);
+		if (!i) capture_scene("resize-frame-first");
+		xdg_surface_ack_configure(target.xdg_surface, target.configure_serial);
+		resize_buffer(&target, w, h, 0xff0000ff);
+		scene_pump(&bridge, &native);
+		assert(resize_find(&status, 20 + i, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+		wex_window_v1_commit_foreign_resize(frame.wex_win, 20 + i, 20, 40, w, h);
+		scene_pump(&bridge, &native);
+		assert(resize_find(&status, 20 + i, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+		struct item *actual = find(&bridge, "L2 resize target");
+		assert(actual->x == x && actual->y == y && actual->width == w && actual->height == h);
+		assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+		width = w;
+		height = h;
+	}
+	puts("PASS all eight edges/corners, frame-first commits and one-pixel-accurate native placement");
+	wex_window_v1_resize_foreign(frame.wex_win, 30, 10, x, y, width + 10, height + 10);
+	scene_pump(&bridge, &native);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 103, 0);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 30, WEX_WINDOW_V1_RESIZE_STAGE_ROLLING_BACK));
+	resize_ack_buffer(&target);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 30, 20, 40, width, height);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 30, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	assert(!status.captured && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 103, 1);
+	wex_window_v1_resize_foreign(frame.wex_win, 31, 10, x, y, width + 10, height + 10);
+	scene_pump(&bridge, &native);
+	wex_window_finish(&target);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 31, WEX_WINDOW_V1_RESIZE_STAGE_FAILED));
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED && !status.captured);
+	puts("PASS explicit capture release rolls back; native teardown releases retained buffers and listeners");
+	map(&target, &native, "L2 resize replacement", true);
+	pump(&owner);
+	item = find(&owner, "L2 resize replacement");
+	resize_buffer(&frame, 300, 240, 0xffff0000);
+	request_association(&bridge, &frame, &status, item->token, item->controller,
+		WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
+	wex_window_v1_commit_foreign(frame.wex_win, 20, 40, 240, 180);
+	scene_pump(&bridge, &native);
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
+	wex_window_v1_activate(frame.wex_win);
+	scene_pump(&bridge, &native);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 104, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 104, 1);
+	target.defer_configure = true;
+	wex_window_v1_resize_foreign(frame.wex_win, 32, 10, 170, 160, 260, 200);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 32, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED));
+	wex_window_finish(&frame);
+	scene_pump(&bridge, &native);
+	pump(&owner);
+	assert(!item->closed && item->mode == WEX_FOREIGN_WINDOW_V1_DECORATION_SERVER);
+	wex_window_finish(&target);
+	scene_pump(&bridge, &native);
+	puts("PASS frame destruction during negotiation restores ordinary native decoration and lifetime");
+	xx_zone_v1_destroy(zone);
+	wex_context_finish(&native);
+	wl_display_disconnect(owner.ctx.display);
+	wl_display_disconnect(bridge.ctx.display);
+	puts("FOREIGN_RESIZE_PASSED");
 	return 0;
 }
