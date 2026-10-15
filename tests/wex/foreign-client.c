@@ -810,6 +810,17 @@ static int scene_test(void)
 	scene_pump(&bridge, &native);
 	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
 	capture_scene("scene-minimized");
+	/* A focus completion racing a native minimize must not restore the group.
+	 * Both an old and a new client epoch require an explicit state transition. */
+	wex_window_v1_set_foreign_focus(frame.wex_win, 47, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_pump(&bridge, &native);
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	wex_window_v1_set_foreign_focus(frame.wex_win, 48, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
+	scene_pump(&bridge, &native);
+	pump(&owner);
+	assert(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED));
+	assert(status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
+	puts("PASS delayed focus requests cannot restore a minimized native group");
 	wex_window_v1_activate(frame.wex_win);
 	scene_pump(&bridge, &native);
 	assert(native.keyboard_focus_surface == target.surface);

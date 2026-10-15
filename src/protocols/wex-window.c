@@ -586,7 +586,7 @@ handle_wex_window_set_foreign_focus(struct wl_client *client, struct wl_resource
 {
 	struct wex_window *frame = wl_resource_get_user_data(resource);
 	frame->focus_epoch = epoch;
-	if (frame->scene) {
+	if (frame->scene && !frame->view->minimized && !wex_scene_native(frame->scene)->minimized) {
 		uint32_t current = wex_scene_focus_target(frame->scene);
 		if (target == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE) {
 			desktop_focus_view_forced(wex_scene_native(frame->scene), true);

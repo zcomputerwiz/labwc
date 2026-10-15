@@ -4,6 +4,7 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/transform.h>
+#include <wlr/util/log.h>
 #include "common/mem.h"
 #include "labwc.h"
 #include "node.h"
@@ -243,6 +244,13 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 			|| client->width > view->surface->current.width - client->x
 			|| client->height > view->surface->current.height - client->y
 			|| native->current.width != client->width || native->current.height != client->height) {
+		wlr_log(WLR_DEBUG, "Hosted group not ready: frame mapped=%d buffer=%d size=%dx%d native mapped=%d buffer=%d size=%dx%d client=%d,%d %dx%d",
+			view && view->mapped, view && view->surface && view->surface->buffer,
+			view && view->surface ? view->surface->current.width : 0,
+			view && view->surface ? view->surface->current.height : 0,
+			native->mapped, native->surface && native->surface->buffer,
+			native->current.width, native->current.height,
+			client->x, client->y, client->width, client->height);
 		return NULL;
 	}
 	if ((native->ssd_preference == LAB_SSD_PREF_CLIENT || view_get_ssd_mode(native) == LAB_SSD_MODE_NONE)
