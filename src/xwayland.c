@@ -13,12 +13,15 @@
 #include "node.h"
 #include "ssd.h"
 #include "view.h"
+#include "protocols/wex-window.h"
 #include "view-impl-common.h"
 #include "window-rules.h"
 #include "workspaces.h"
 #include "xwayland.h"
 
 xcb_atom_t atoms[WINDOW_TYPE_LEN] = {0};
+/* The backend, like its atom table, has one XWM per compositor. */
+static struct server *xwm_server;
 
 static void xwayland_view_unmap(struct view *view, bool client_request);
 
@@ -57,6 +60,8 @@ xwayland_view_get_size_hints(struct view *view)
 		.height_inc = hints->height_inc,
 		.base_width = hints->base_width,
 		.base_height = hints->base_height,
+		.max_width = hints->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE ? hints->max_width : 0,
+		.max_height = hints->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE ? hints->max_height : 0,
 	};
 }
 
@@ -332,6 +337,7 @@ handle_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&xwayland_view->set_strut_partial.link);
 	wl_list_remove(&xwayland_view->set_window_type.link);
 	wl_list_remove(&xwayland_view->map_request.link);
+	if (xwayland_view->normal_hints_idle) wl_event_source_remove(xwayland_view->normal_hints_idle);
 
 	view_destroy(view);
 }
@@ -523,6 +529,37 @@ static void
 handle_set_window_type(struct wl_listener *listener, void *data)
 {
 	/* Intentionally left blank */
+}
+
+static void
+normal_hints_updated(void *data)
+{
+	struct xwayland_view *view = data;
+	view->normal_hints_idle = NULL;
+	wex_foreign_window_update(&view->base);
+}
+
+static int
+handle_xwm_event(struct wlr_xwm *xwm, xcb_generic_event_t *event)
+{
+	if (!xwm_server || !xwm_server->xwayland || xwm_server->xwayland->xwm != xwm ||
+			(event->response_type & 0x7f) != XCB_PROPERTY_NOTIFY) return 0;
+	xcb_property_notify_event_t *property = (xcb_property_notify_event_t *)event;
+	if (property->atom != XCB_ATOM_WM_NORMAL_HINTS) return 0;
+	/* wlroots 0.18 emits set_hints for WM_HINTS, not WM_NORMAL_HINTS. Observe
+	 * the latter using its public XWM hook, then defer until its normal handler
+	 * has read the property. Never consume or independently parse the X event. */
+	struct view *view;
+	wl_list_for_each(view, &xwm_server->views, link) {
+		if (view->type != LAB_XWAYLAND_VIEW) continue;
+		struct xwayland_view *xview = (struct xwayland_view *)view;
+		if (xview->xwayland_surface->window_id == property->window && !xview->normal_hints_idle) {
+			xview->normal_hints_idle = wl_event_loop_add_idle(
+				wl_display_get_event_loop(xwm_server->wl_display), normal_hints_updated, xview);
+			break;
+		}
+	}
+	return 0;
 }
 
 static void
@@ -1117,6 +1154,8 @@ xwayland_server_init(struct server *server, struct wlr_compositor *compositor)
 		wlr_log(WLR_ERROR, "cannot create xwayland server");
 		exit(EXIT_FAILURE);
 	}
+	xwm_server = server;
+	server->xwayland->user_event_handler = handle_xwm_event;
 	server->xwayland_new_surface.notify = handle_new_surface;
 	wl_signal_add(&server->xwayland->events.new_surface,
 		&server->xwayland_new_surface);
@@ -1242,6 +1281,7 @@ void
 xwayland_server_finish(struct server *server)
 {
 	struct wlr_xwayland *xwayland = server->xwayland;
+	if (xwm_server == server) xwm_server = NULL;
 	/*
 	 * Reset server->xwayland to NULL first to prevent callbacks (like
 	 * server_global_filter) from accessing it as it is destroyed

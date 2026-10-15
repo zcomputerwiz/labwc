@@ -95,7 +95,7 @@ handle-client: handle-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -o $@ $^ $(LIBS)
 
 foreign-client: foreign-client.o $(COMMON_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS) -lxcb-icccm -lxcb
 
 alpha-client: alpha-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)

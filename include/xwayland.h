@@ -70,10 +70,10 @@ struct xwayland_view {
 	struct wl_listener set_strut_partial;
 	struct wl_listener set_window_type;
 	struct wl_listener map_request;
+	struct wl_event_source *normal_hints_idle;
 
 	/* Not (yet) implemented */
 /*	struct wl_listener set_role; */
-/*	struct wl_listener set_hints; */
 };
 
 void xwayland_unmanaged_create(struct server *server,

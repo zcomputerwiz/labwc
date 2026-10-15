@@ -61,6 +61,8 @@ xdg_toplevel_view_get_size_hints(struct view *view)
 	return (struct view_size_hints){
 		.min_width = state->min_width,
 		.min_height = state->min_height,
+		.max_width = state->max_width,
+		.max_height = state->max_height,
 	};
 }
 

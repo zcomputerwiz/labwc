@@ -123,6 +123,8 @@ struct view_size_hints {
 	int height_inc;
 	int base_width;
 	int base_height;
+	int max_width;
+	int max_height;
 };
 
 struct view_impl {

@@ -109,6 +109,10 @@ run_check "Shared handles across three clients and layer/lifetime invariants" \
 
 run_check "Native supplemental observation, controls and lifetime" \
     "$SCRIPT_DIR/foreign-client"
+run_check "Native maximum constraints, live updates and old observers" \
+    "$SCRIPT_DIR/foreign-client" --constraints
+run_check "XWayland maximum constraints and live WM_NORMAL_HINTS" \
+    "$SCRIPT_DIR/foreign-client" --xwayland-constraints
 
 run_check "Native/frame association reservation and lifetime" \
     "$SCRIPT_DIR/foreign-client" --association

@@ -10,6 +10,8 @@
 #include <sys/mman.h>
 #include <linux/input-event-codes.h>
 #include <xkbcommon/xkbcommon.h>
+#include <xcb/xcb.h>
+#include <xcb/xcb_icccm.h>
 #include "shm-common.h"
 #include "wex-window-v1-client-protocol.h"
 #include "xx-zones-v1-client-protocol.h"
@@ -21,6 +23,8 @@ struct item {
 	struct wex_foreign_window_v1 *foreign;
 	char title[128], token[33], controller[33];
 	int x, y, width, height, min_width, min_height;
+	int max_width, max_height;
+	unsigned maximum_events;
 	unsigned mode, done, states, decoration_downgrades;
 	bool closed, foreign_closed;
 };
@@ -82,6 +86,13 @@ static void done(void *data, struct wex_foreign_window_v1 *obj)
 {
 	++((struct item *)data)->done;
 }
+static void maximum_size(void *data, struct wex_foreign_window_v1 *obj, int32_t width, int32_t height)
+{
+	struct item *item = data;
+	item->max_width = width;
+	item->max_height = height;
+	item->maximum_events++;
+}
 static void closed(void *data, struct wex_foreign_window_v1 *obj)
 {
 	((struct item *)data)->foreign_closed = true;
@@ -90,6 +101,7 @@ static const struct wex_foreign_window_v1_listener supplement = {
 	.token = token, .geometry = geometry, .decoration = decoration,
 	.size_hints = hints, .done = done, .closed = closed,
 	.controller_handle = controller,
+	.maximum_size = maximum_size,
 };
 static void title(void *data, struct zwlr_foreign_toplevel_handle_v1 *obj, const char *value)
 {
@@ -189,12 +201,16 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 static int association_test(void);
 static int publish_association(bool hosting);
 static int scene_test(void);
+static int constraints_test(void);
+static int xwayland_constraints_test(void);
 int main(int argc, char **argv)
 {
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
 	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association(false);
 	if (argc == 2 && !strcmp(argv[1], "--publish-hosting")) return publish_association(true);
 	if (argc == 2 && !strcmp(argv[1], "--scene")) return scene_test();
+	if (argc == 2 && !strcmp(argv[1], "--constraints")) return constraints_test();
+	if (argc == 2 && !strcmp(argv[1], "--xwayland-constraints")) return xwayland_constraints_test();
 	struct wex_context native;
 	struct wex_window_obj csd, ssd, late, frame;
 	struct observer first = {0}, second = {0};
@@ -286,6 +302,150 @@ int main(int argc, char **argv)
 }
 
 static struct zwp_virtual_keyboard_v1 *scene_keyboard(struct observer *bridge);
+static void checked_frame_handle(void *data, struct wex_window_v1 *obj, const char *value)
+{
+	*(bool *)data = strlen(value) == 32;
+}
+
+static struct item *wait_hints(struct observer *observer, const char *name,
+		int min_width, int min_height, int max_width, int max_height)
+{
+	for (unsigned attempt = 0; attempt < 200; attempt++) {
+		pump(observer);
+		for (unsigned i = 0; i < observer->count; i++) {
+			struct item *item = &observer->items[i];
+			if (!strcmp(item->title, name) && item->done &&
+					item->min_width == min_width && item->min_height == min_height &&
+					item->max_width == max_width && item->max_height == max_height) return item;
+		}
+		usleep(10000);
+	}
+	fprintf(stderr, "Expected %s min=%d,%d max=%d,%d; observed %u views\n",
+		name,min_width,min_height,max_width,max_height,observer->count);
+	for (unsigned i = 0; i < observer->count; i++) {
+		struct item *item = &observer->items[i];
+		fprintf(stderr, "%s min=%d,%d max=%d,%d done=%u closed=%d\n",item->title,
+			item->min_width,item->min_height,item->max_width,item->max_height,item->done,item->foreign_closed);
+	}
+	assert(!"native hints observation timed out");
+	return NULL;
+}
+
+static int xwayland_constraints_test(void)
+{
+	struct observer observer = {.protocol_version = 9};
+	observe(&observer);
+	if (!observer.native_xdisplay[0]) {
+		wl_display_disconnect(observer.ctx.display);
+		puts("XWAYLAND_CONSTRAINTS_SKIPPED no XWayland");
+		return 0;
+	}
+	int screen_number;
+	xcb_connection_t *connection = xcb_connect(observer.native_xdisplay, &screen_number);
+	assert(!xcb_connection_has_error(connection));
+	xcb_screen_iterator_t screens = xcb_setup_roots_iterator(xcb_get_setup(connection));
+	while (screen_number--) xcb_screen_next(&screens);
+	xcb_screen_t *screen = screens.data;
+	xcb_window_t window = xcb_generate_id(connection);
+	uint32_t values[] = {0x445566, XCB_EVENT_MASK_EXPOSURE};
+	xcb_void_cookie_t created = xcb_create_window_checked(connection, XCB_COPY_FROM_PARENT, window, screen->root,
+		50, 50, 240, 180, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
+		XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
+	assert(!xcb_request_check(connection, created));
+	const char *name = "L2 XWayland constraints";
+	xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_NAME,
+		XCB_ATOM_STRING, 8, strlen(name), name);
+	xcb_size_hints_t hints = {.flags = XCB_ICCCM_SIZE_HINT_P_MIN_SIZE | XCB_ICCCM_SIZE_HINT_P_MAX_SIZE,
+		.min_width = 120, .min_height = 90, .max_width = 320, .max_height = 240};
+	xcb_icccm_set_wm_normal_hints(connection, window, &hints);
+	assert(!xcb_request_check(connection, xcb_map_window_checked(connection, window)));
+	xcb_flush(connection);
+	struct item *item = wait_hints(&observer, name, 120, 90, 320, 240);
+	hints.min_width = hints.max_width = 240;
+	hints.min_height = hints.max_height = 180;
+	xcb_icccm_set_wm_normal_hints(connection, window, &hints); xcb_flush(connection);
+	wait_hints(&observer, name, 240, 180, 240, 180);
+	hints.min_width = 120; hints.min_height = 90;
+	hints.max_width = 0; hints.max_height = 200;
+	xcb_icccm_set_wm_normal_hints(connection, window, &hints); xcb_flush(connection);
+	wait_hints(&observer, name, 120, 90, 0, 200);
+	/* Stale values without PMaxSize must not become live upper bounds. */
+	hints.flags &= ~XCB_ICCCM_SIZE_HINT_P_MAX_SIZE;
+	hints.max_width = 320; hints.max_height = 240;
+	xcb_icccm_set_wm_normal_hints(connection, window, &hints); xcb_flush(connection);
+	wait_hints(&observer, name, 120, 90, 0, 0);
+	xcb_destroy_window(connection, window); xcb_flush(connection);
+	for (unsigned attempt = 0; attempt < 200 && !item->foreign_closed; attempt++) {
+		pump(&observer); usleep(10000);
+	}
+	assert(item->foreign_closed);
+	xcb_disconnect(connection); wl_display_disconnect(observer.ctx.display);
+	puts("XWAYLAND_CONSTRAINTS_PASSED initial/live/fixed/partial/flags/lifetime");
+	return 0;
+}
+
+static int constraints_test(void)
+{
+	struct wex_context native;
+	struct wex_window_obj win;
+	struct wex_window_obj frame;
+	struct observer modern = {.protocol_version = 9}, old = {.protocol_version = 8};
+	assert(wex_context_init(&native, "wayland-0"));
+	map(&win, &native, "L2 constraint reporting", true);
+	xdg_toplevel_set_max_size(win.xdg_toplevel, 320, 240);
+	wl_surface_commit(win.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	observe(&modern); observe(&old);
+	bool got_frame_handle = false;
+	const struct wex_window_v1_listener frame_events = {.handle = checked_frame_handle};
+	assert(wex_window_init(&frame, &modern.ctx, "L2 version 9 frame", 300, 220, 0xff885544));
+	frame.wex_win = wex_window_manager_v1_get_window(modern.manager, frame.xdg_toplevel);
+	wex_window_v1_add_listener(frame.wex_win, &frame_events, &got_frame_handle);
+	pump(&modern);
+	assert(got_frame_handle);
+	wex_window_finish(&frame);
+	struct item *item = find(&modern, "L2 constraint reporting");
+	struct item *legacy = find(&old, "L2 constraint reporting");
+	assert(item->min_width == 120 && item->min_height == 90);
+	assert(item->max_width == 320 && item->max_height == 240 && item->maximum_events);
+	assert(!legacy->maximum_events && !legacy->max_width && !legacy->max_height);
+	unsigned before = item->done;
+	xdg_toplevel_set_min_size(win.xdg_toplevel, 240, 180);
+	xdg_toplevel_set_max_size(win.xdg_toplevel, 240, 180);
+	wl_surface_commit(win.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&modern); pump(&old);
+	assert(item->done > before && item->width == 240 && item->height == 180);
+	assert(item->min_width == 240 && item->min_height == 180);
+	assert(item->max_width == 240 && item->max_height == 180);
+	assert(legacy->min_width == 240 && legacy->min_height == 180 && !legacy->maximum_events);
+	xdg_toplevel_set_min_size(win.xdg_toplevel, 0, 90);
+	xdg_toplevel_set_max_size(win.xdg_toplevel, 0, 200);
+	wl_surface_commit(win.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&modern);
+	assert(item->min_width == 0 && item->min_height == 90);
+	assert(item->max_width == 0 && item->max_height == 200);
+	xdg_toplevel_set_min_size(win.xdg_toplevel, 0, 0);
+	xdg_toplevel_set_max_size(win.xdg_toplevel, 0, 0);
+	wl_surface_commit(win.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&modern);
+	assert(!item->min_width && !item->min_height && !item->max_width && !item->max_height);
+	before = item->done;
+	wl_surface_commit(win.surface);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&modern);
+	assert(item->done == before);
+	wex_window_finish(&win);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&modern); pump(&old);
+	assert(item->foreign_closed && legacy->foreign_closed);
+	wl_display_disconnect(modern.ctx.display); wl_display_disconnect(old.ctx.display);
+	wex_context_finish(&native);
+	puts("CONSTRAINTS_PASSED initial/live/fixed/partial/unlimited/unchanged/legacy/lifetime");
+	return 0;
+}
 
 static int publish_association(bool hosting)
 {
@@ -384,6 +544,17 @@ static int publish_association(bool hosting)
 				assert(wl_display_roundtrip(native.display)>=0);
 			}
 			if (!strcmp(command,"minimize\n")) zwlr_foreign_toplevel_handle_v1_set_minimized(item->handle);
+			if (!strcmp(command,"limited\n") || !strcmp(command,"fixed\n") ||
+					!strcmp(command,"height-limit\n") || !strcmp(command,"unlimited\n")) {
+				bool fixed = !strcmp(command,"fixed\n");
+				bool limited = !strcmp(command,"limited\n");
+				bool height_only = !strcmp(command,"height-limit\n");
+				xdg_toplevel_set_min_size(win.xdg_toplevel, fixed ? 240 : 120, fixed ? 180 : 90);
+				xdg_toplevel_set_max_size(win.xdg_toplevel, fixed ? 240 : limited ? 320 : 0,
+					fixed ? 180 : limited ? 240 : height_only ? 200 : 0);
+				wl_surface_commit(win.surface);
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
 			if (!strcmp(command,"restore\n")) zwlr_foreign_toplevel_handle_v1_unset_minimized(item->handle);
 			if (!strcmp(command,"state\n")) {
 				pump(&owner);

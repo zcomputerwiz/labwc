@@ -66,6 +66,8 @@ struct wex_foreign_window {
 	struct view *view;
 	struct wl_resource *resource;
 	struct wl_listener toplevel_destroy;
+	struct wl_listener constraints_commit;
+	struct view_size_hints last_hints;
 	struct wex_window *frame;
 	char controller_handle[33];
 };
@@ -133,7 +135,22 @@ foreign_send_snapshot(struct wex_foreign_window *foreign)
 	wex_foreign_window_v1_send_size_hints(foreign->resource,
 		hints.min_width, hints.min_height, hints.width_inc, hints.height_inc,
 		hints.base_width, hints.base_height);
+	if (wl_resource_get_version(foreign->resource) >= 9) {
+		wex_foreign_window_v1_send_maximum_size(foreign->resource,
+			hints.max_width, hints.max_height);
+	}
 	wex_foreign_window_v1_send_done(foreign->resource);
+	foreign->last_hints = hints;
+}
+
+static void
+foreign_constraints_committed(struct wl_listener *listener, void *data)
+{
+	struct wex_foreign_window *foreign = wl_container_of(listener, foreign, constraints_commit);
+	struct view_size_hints hints = view_get_size_hints(foreign->view);
+	if (memcmp(&hints, &foreign->last_hints, sizeof(hints))) {
+		foreign_send_snapshot(foreign);
+	}
 }
 
 void
@@ -160,6 +177,7 @@ foreign_resource_destroy(struct wl_resource *resource)
 	}
 	if (foreign->view) {
 		wl_list_remove(&foreign->toplevel_destroy.link);
+		wl_list_remove(&foreign->constraints_commit.link);
 	}
 	wl_list_remove(&foreign->link);
 	free(foreign);
@@ -174,6 +192,7 @@ handle_foreign_toplevel_destroy(struct wl_listener *listener, void *data)
 		release_foreign_association(foreign->frame, true);
 	}
 	wl_list_remove(&foreign->toplevel_destroy.link);
+	wl_list_remove(&foreign->constraints_commit.link);
 	foreign->view = NULL;
 	wex_foreign_window_v1_send_closed(foreign->resource);
 }
@@ -225,6 +244,7 @@ handle_manager_get_foreign(struct wl_client *client,
 	foreign->manager = manager;
 	foreign->resource = wl_resource_create(client,
 		&wex_foreign_window_v1_interface,
+		wl_resource_get_version(resource) >= 9 ? 9 :
 		wl_resource_get_version(resource) >= 4 ? 4 : 1, id);
 	if (!foreign->resource) {
 		free(foreign);
@@ -256,6 +276,8 @@ handle_manager_get_foreign(struct wl_client *client,
 	foreign->toplevel_destroy.notify = handle_foreign_toplevel_destroy;
 	wl_signal_add(&found->foreign_toplevel->events.toplevel_destroy,
 		&foreign->toplevel_destroy);
+	foreign->constraints_commit.notify = foreign_constraints_committed;
+	wl_signal_add(&found->surface->events.commit, &foreign->constraints_commit);
 	wex_foreign_window_v1_send_token(foreign->resource,
 		found->wex_foreign_token);
 	foreign_send_snapshot(foreign);
@@ -733,7 +755,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 8, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 9, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
