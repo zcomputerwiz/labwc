@@ -37,6 +37,8 @@ TARGETS = zones-client stack-client alpha-client warp-client policy-client handl
 
 all: $(TARGETS)
 
+$(TARGETS:=.o): shm-common.h
+
 xx-zones-v1-client-protocol.h: $(TOP_PROTOCOLS_DIR)/xx-zones-v1.xml
 	$(WAYLAND_SCANNER) client-header $< $@
 
