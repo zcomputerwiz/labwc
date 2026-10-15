@@ -29,6 +29,7 @@ main(int argc, char **argv)
 	const char *socket_name = NULL;
 	int target_x = 120;
 	int target_y = 240;
+	bool geometry_offset = false;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -37,6 +38,8 @@ main(int argc, char **argv)
 			target_x = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "--y") == 0 && i + 1 < argc) {
 			target_y = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--geometry-offset") == 0) {
+			geometry_offset = true;
 		}
 	}
 
@@ -64,6 +67,7 @@ main(int argc, char **argv)
 		wex_context_finish(&ctx);
 		return 1;
 	}
+	if (geometry_offset) xdg_surface_set_window_geometry(win.xdg_surface, 17, 23, 1240, 750);
 	wl_surface_commit(win.surface);
 
 	wl_display_roundtrip(ctx.display);

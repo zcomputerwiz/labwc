@@ -239,6 +239,8 @@ run_check "wp_alpha_modifier_v1 subsurface at 50% opacity (blended Yellow R=128,
 # TEST 9: wp_pointer_warp_v1
 run_check "wp_pointer_warp_v1 repositions pointer and emits motion event" \
     "$SCRIPT_DIR/warp-client" --x 350 --y 250
+run_check "wp_pointer_warp_v1 respects nonzero xdg window geometry" \
+    "$SCRIPT_DIR/warp-client" --geometry-offset --x 350 --y 250
 
 # TEST 10: wex focus and stacking policy (Test 1)
 BARRIER_DIR="$XDG_RUNTIME_DIR/barriers"
