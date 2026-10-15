@@ -17,6 +17,7 @@
 
 struct item {
 	struct zwlr_foreign_toplevel_handle_v1 *handle;
+	struct zwlr_foreign_toplevel_handle_v1 *parent;
 	struct wex_foreign_window_v1 *foreign;
 	char title[128], token[33], controller[33];
 	int x, y, width, height, min_width, min_height;
@@ -112,7 +113,10 @@ static void standard_closed(void *data, struct zwlr_foreign_toplevel_handle_v1 *
 	((struct item *)data)->closed = true;
 }
 static void parent(void *data, struct zwlr_foreign_toplevel_handle_v1 *obj,
-		struct zwlr_foreign_toplevel_handle_v1 *value) {}
+		struct zwlr_foreign_toplevel_handle_v1 *value)
+{
+	((struct item *)data)->parent = value;
+}
 static const struct zwlr_foreign_toplevel_handle_v1_listener standard = {
 	.title = title, .app_id = app_id, .output_enter = output,
 	.output_leave = output, .state = state, .done = standard_done,
@@ -285,6 +289,8 @@ static struct zwp_virtual_keyboard_v1 *scene_keyboard(struct observer *bridge);
 
 static int publish_association(bool hosting)
 {
+	/* poll() must see every command, including consecutive lines. */
+	setvbuf(stdin,NULL,_IONBF,0);
 	struct wex_context native;
 	struct wex_window_obj win, child;
 	bool main_alive = true, child_alive = false;
@@ -331,6 +337,25 @@ static int publish_association(bool hosting)
 				wex_window_finish(&win);
 				main_alive=false;
 				assert(wl_display_roundtrip(native.display)>=0);
+			}
+			if (!strcmp(command,"parent-unmap\n") && main_alive) {
+				wl_surface_attach(win.surface,NULL,0,0);
+				wl_surface_commit(win.surface);
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
+			if (!strcmp(command,"parent-remap\n") && main_alive) {
+				win.configured=false;
+				xdg_toplevel_set_title(win.xdg_toplevel,"L2 Wine association peer");
+				zxdg_toplevel_decoration_v1_set_mode(win.deco,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+				wl_surface_commit(win.surface);
+				assert(wl_display_roundtrip(native.display)>=0);
+				wex_window_commit_buffer(&win);
+				assert(wl_display_roundtrip(native.display)>=0);
+			}
+			if (!strcmp(command,"parent-state\n") && child_alive) {
+				pump(&owner);
+				printf("PARENT %u\n",find(&owner,"L2 Shell child")->parent != NULL);
+				fflush(stdout);
 			}
 			if (!strcmp(command,"release\n") && item->foreign) {
 				wex_foreign_window_v1_destroy(item->foreign);
