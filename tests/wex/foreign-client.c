@@ -459,6 +459,8 @@ static int publish_association(bool hosting)
 	struct wex_context native;
 	struct wex_window_obj win, child;
 	bool main_alive = true, child_alive = false;
+	bool follow_configures = false;
+	uint32_t painted_configure = 0;
 	struct observer owner = {.protocol_version = 4};
 	struct zwlr_virtual_pointer_v1 *pointer = NULL;
 	struct zwp_virtual_keyboard_v1 *keyboard = NULL;
@@ -481,6 +483,17 @@ static int publish_association(bool hosting)
 		};
 		assert(wl_display_dispatch_pending(native.display) >= 0);
 		assert(wl_display_dispatch_pending(owner.ctx.display) >= 0);
+		if (follow_configures && main_alive && win.configure_serial != painted_configure) {
+			int width = win.configured_width > 0 ? win.configured_width : win.width;
+			int height = win.configured_height > 0 ? win.configured_height : win.height;
+			struct wex_buffer old = win.buffer;
+			assert(wex_buffer_create(&native, &win.buffer, width, height, 0xff338855));
+			win.width = width; win.height = height;
+			painted_configure = win.configure_serial;
+			xdg_surface_set_window_geometry(win.xdg_surface, 0, 0, width, height);
+			wex_window_commit_buffer(&win);
+			wex_buffer_destroy(&old);
+		}
 		wl_display_flush(native.display);
 		wl_display_flush(owner.ctx.display);
 		if (poll(fds, 3, -1) < 0) return 1;
@@ -489,6 +502,10 @@ static int publish_association(bool hosting)
 		if (fds[2].revents & (POLLIN | POLLHUP)) {
 			char command[32];
 			if (!fgets(command, sizeof(command), stdin) || !strcmp(command,"quit\n")) break;
+			if (!strcmp(command,"follow-configures\n")) {
+				follow_configures = true;
+				painted_configure = win.configure_serial;
+			}
 			if (!strcmp(command,"child\n") && main_alive && !child_alive) {
 				map_parent(&child,&native,"L2 Shell child",true,&win);
 				child_alive=true;
