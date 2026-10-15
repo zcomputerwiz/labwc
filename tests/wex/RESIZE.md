@@ -8,7 +8,8 @@ The full suite runs unchanged older-version clients alongside the v10 case.
 The v10 test checks that acceptance, xdg acknowledgement, native buffer commit
 and matching frame publication are separate. It delays acknowledgements and
 buffers, submits a client-selected size, checks left/top anchoring after maximum
-constraints, supersedes an unacknowledged request, rejects stale cancellation
+constraints, rejects an acknowledged empty commit as buffer readiness, checks
+supersession of an unacknowledged request, rejects stale cancellation
 and publication, and checks fixed and single-axis constraints. It exercises all
 eight edges/corners, both frame-first and native-first publication, explicit
 cancellation, focus/capture loss, timeout rollback, ignored rollback, and native

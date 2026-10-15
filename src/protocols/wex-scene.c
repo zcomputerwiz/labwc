@@ -611,8 +611,15 @@ resize_native_committed(struct wex_scene *scene)
 {
 	struct resize_transaction *resize = scene->resize;
 	struct wlr_xdg_surface *xdg = xdg_surface_from_view(scene->native);
+	uint32_t content = WLR_SURFACE_STATE_BUFFER | WLR_SURFACE_STATE_SURFACE_DAMAGE |
+		WLR_SURFACE_STATE_BUFFER_DAMAGE | WLR_SURFACE_STATE_VIEWPORT |
+		WLR_SURFACE_STATE_SCALE | WLR_SURFACE_STATE_TRANSFORM;
 	if (!resize->acknowledged ||
 			(int32_t)(xdg->current.configure_serial - resize->configure_serial) < 0) return;
+	/* An ack followed by an otherwise empty commit changes xdg state, not
+	 * content. Keep waiting for a buffer/damage/viewport response. Retained
+	 * buffers may legitimately be reused with damage or new viewport state. */
+	if (!(scene->native->surface->current.committed & content)) return;
 	struct wlr_box previous = resize->actual;
 	resize->actual = scene->native->current;
 	if (resize->edges & WLR_EDGE_LEFT)

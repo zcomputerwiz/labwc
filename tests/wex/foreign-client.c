@@ -1221,6 +1221,11 @@ resize_test(void)
 	pump(&bridge);
 	assert(resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED));
 	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	/* Committing only the acknowledged xdg state is still not a content
+	 * response. Neither a new buffer nor damage/viewport state was supplied. */
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
 	/* The native client chooses a different size after acknowledging. */
 	resize_buffer(&target, 310, 230, 0xff0000ff);
 	scene_pump(&bridge, &native);
