@@ -390,6 +390,11 @@ static int publish_association(bool hosting)
 				printf("STATE %u\n",!!(item->states & (1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED)));
 				fflush(stdout);
 			}
+			if (!strcmp(command,"geometry\n")) {
+				pump(&owner);
+				printf("GEOMETRY %d %d %d %d\n",item->x,item->y,item->width,item->height);
+				fflush(stdout);
+			}
 			unsigned key;
 			if (sscanf(command,"key %u",&key) == 1) {
 				if (!keyboard) keyboard=scene_keyboard(&owner);
@@ -399,17 +404,26 @@ static int publish_association(bool hosting)
 				puts("KEY"); fflush(stdout);
 			}
 			int click_x, click_y;
+			bool motion_only = sscanf(command,"motion %d %d",&click_x,&click_y) == 2;
+			bool press_only = sscanf(command,"press %d %d",&click_x,&click_y) == 2;
+			bool release_only = sscanf(command,"release-at %d %d",&click_x,&click_y) == 2;
 			bool right_click = sscanf(command,"right %d %d",&click_x,&click_y) == 2;
-			if (right_click || sscanf(command,"click %d %d",&click_x,&click_y) == 2) {
+			if (motion_only || press_only || release_only || right_click || sscanf(command,"click %d %d",&click_x,&click_y) == 2) {
 				uint32_t button = right_click ? BTN_RIGHT : BTN_LEFT;
 				if (!pointer) pointer=zwlr_virtual_pointer_manager_v1_create_virtual_pointer(
 					owner.ctx.virtual_pointer_manager,owner.ctx.seat);
 				zwlr_virtual_pointer_v1_motion_absolute(pointer,0,click_x,click_y,1280,720);
 				zwlr_virtual_pointer_v1_frame(pointer);
-				zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_PRESSED);
-				zwlr_virtual_pointer_v1_frame(pointer);
-				zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_RELEASED);
-				zwlr_virtual_pointer_v1_frame(pointer);
+				if (!motion_only) {
+					if (!release_only) {
+						zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_PRESSED);
+						zwlr_virtual_pointer_v1_frame(pointer);
+					}
+					if (!press_only) {
+						zwlr_virtual_pointer_v1_button(pointer,0,button,WL_POINTER_BUTTON_STATE_RELEASED);
+						zwlr_virtual_pointer_v1_frame(pointer);
+					}
+				}
 				pump(&owner);
 				assert(wl_display_roundtrip(native.display)>=0);
 				printf("CLICK %u %u %d\n",native.keyboard_focus_surface==win.surface,
@@ -425,7 +439,7 @@ static int publish_association(bool hosting)
 	return 0;
 }
 
-struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies, configured_serial, configured_status; };
+struct frame_status { unsigned status, replies, group, group_replies, focus, epoch, focus_replies, configured_serial, configured_status, captured, capture_epoch; };
 static void frame_handle(void *data, struct wex_window_v1 *obj, const char *handle) {}
 static void association(void *data, struct wex_window_v1 *obj, uint32_t status)
 {
@@ -453,11 +467,18 @@ static void configured_foreign(void *data, struct wex_window_v1 *obj, uint32_t s
 	frame->configured_serial = serial;
 	frame->configured_status = status;
 }
+static void foreign_pointer_capture(void *data, struct wex_window_v1 *obj, uint32_t epoch, uint32_t captured)
+{
+	struct frame_status *frame = data;
+	frame->captured = captured;
+	frame->capture_epoch = epoch;
+}
 static const struct wex_window_v1_listener frame_listener = {
 	.handle = frame_handle, .foreign_association = association,
 	.foreign_group = group,
 	.foreign_focus = foreign_focus,
 	.configured_foreign = configured_foreign,
+	.foreign_pointer_capture = foreign_pointer_capture,
 };
 static void prepare_frame(struct observer *bridge, struct wex_window_obj *frame,
 		struct frame_status *status)
@@ -645,7 +666,7 @@ static int scene_test(void)
 {
 	struct wex_context native;
 	struct wex_window_obj background, target, frame;
-	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 7};
+	struct observer owner = {.protocol_version = 4}, bridge = {.protocol_version = 8};
 	struct frame_status status = {0};
 	assert(wex_context_init(&native, "wayland-0"));
 	assert(wex_window_init(&background, &native, "L2 scene background", 500, 400, 0xff00ff00));
@@ -738,8 +759,22 @@ static int scene_test(void)
 	assert(status.epoch == 43 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
 	assert(!native.keyboard_focus_surface && bridge.ctx.keyboard_focus_surface == frame.surface);
 	scene_key(&bridge, &native, keyboard, false);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 42, 1);
+	scene_pump(&bridge, &native);
+	assert(!status.captured && status.capture_epoch == 42);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 43, 1);
+	scene_pump(&bridge, &native);
+	assert(status.captured && status.capture_epoch == 43);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 42, 0);
+	scene_pump(&bridge, &native);
+	unsigned buttons_before_capture = native.button_event_count;
+	scene_click(&bridge, &native, pointer, 150, 180);
+	assert(bridge.ctx.pointer_focus_surface == frame.surface);
+	assert(bridge.ctx.pointer_x == 50 && bridge.ctx.pointer_y == 80);
+	assert(native.button_event_count == buttons_before_capture);
 	wex_window_v1_set_foreign_focus(frame.wex_win, 44, WEX_WINDOW_V1_FOCUS_TARGET_RESTORE_NATIVE);
 	scene_pump(&bridge, &native);
+	assert(!status.captured && status.capture_epoch == 43);
 	assert(status.epoch == 44 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
 	assert(native.keyboard_focus_surface == target.surface && !bridge.ctx.keyboard_focus_surface);
 	scene_key(&bridge, &native, keyboard, true);
@@ -756,6 +791,9 @@ static int scene_test(void)
 	scene_pump(&bridge, &native);
 	assert(status.epoch == 46 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NONE);
 	assert(!bridge.ctx.keyboard_focus_surface);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 46, 1);
+	scene_pump(&bridge, &native);
+	assert(!status.captured && native.keyboard_focus_surface == background.surface);
 	wex_window_v1_set_foreign_focus(frame.wex_win, 47, WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
 	scene_pump(&bridge, &native);
 	assert(status.epoch == 47 && status.focus == WEX_WINDOW_V1_FOCUS_TARGET_NATIVE);
@@ -795,12 +833,17 @@ static int scene_test(void)
 	wl_surface_commit(frame.surface);
 	scene_pump(&bridge, &native);
 	/* Native geometry/policy changes cannot keep an obsolete frame cutout. */
+	wex_window_v1_set_foreign_focus(frame.wex_win, 48, WEX_WINDOW_V1_FOCUS_TARGET_FRAME);
+	wex_window_v1_capture_foreign_pointer(frame.wex_win, 48, 1);
+	scene_pump(&bridge, &native);
+	assert(status.captured);
 	struct wex_buffer original_buffer = target.buffer;
 	assert(wex_buffer_create(&native, &target.buffer, 239, 180, 0x80000080));
 	xdg_surface_set_window_geometry(target.xdg_surface, 0, 0, 239, 180);
 	wex_window_commit_buffer(&target);
 	scene_pump(&bridge, &native);
 	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_DETACHED);
+	assert(!status.captured && status.capture_epoch == 48);
 	assert(status.status == WEX_WINDOW_V1_ASSOCIATION_STATUS_PREPARED);
 	struct wex_buffer resized_buffer = target.buffer;
 	target.buffer = original_buffer;

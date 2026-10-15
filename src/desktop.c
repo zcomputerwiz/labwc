@@ -257,6 +257,20 @@ get_cursor_context(struct server *server)
 {
 	struct cursor_context ret = {.type = LAB_SSD_NONE};
 	struct wlr_cursor *cursor = server->seat.cursor;
+	struct wex_window *capture = server->wex_window_manager ?
+		server->wex_window_manager->pointer_capture : NULL;
+	if (capture && capture->scene && capture->view && capture->view->mapped) {
+		struct view *view = capture->view;
+		struct wlr_box geometry;
+		wlr_xdg_surface_get_geometry(xdg_surface_from_view(view), &geometry);
+		ret.type = LAB_SSD_CLIENT;
+		ret.view = view;
+		ret.node = &view->scene_tree->node;
+		ret.surface = view->surface;
+		ret.sx = cursor->x - view->current.x + geometry.x;
+		ret.sy = cursor->y - view->current.y + geometry.y;
+		return ret;
+	}
 
 	/* Prevent drag icons to be on top of the hitbox detection */
 	if (server->seat.drag.active) {

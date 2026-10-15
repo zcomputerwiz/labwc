@@ -5,10 +5,12 @@
 #include <time.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include "protocols/pointer-warp.h"
 #include "pointer-warp-v1-protocol.h"
 #include "labwc.h"
+#include "input/cursor.h"
 #include "view.h"
 #include "common/mem.h"
 
@@ -49,6 +51,12 @@ handle_warp_pointer(struct wl_client *client,
 
 	double lx = view->current.x + sx;
 	double ly = view->current.y + sy;
+	if (view->type == LAB_XDG_SHELL_VIEW) {
+		struct wlr_box geometry;
+		wlr_xdg_surface_get_geometry(xdg_surface_from_view(view), &geometry);
+		lx -= geometry.x;
+		ly -= geometry.y;
+	}
 
 	struct seat *seat = &manager->server->seat;
 	wlr_cursor_warp(seat->cursor, NULL, lx, ly);
@@ -57,7 +65,12 @@ handle_warp_pointer(struct wl_client *client,
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	uint32_t time_msec = now.tv_sec * 1000 + now.tv_nsec / 1000000;
 
-	wlr_seat_pointer_notify_motion(seat->seat, time_msec, sx, sy);
+	/* A warp can cross views (for example a task menu starting a Wine move
+	 * loop). Route it like normal motion so enter/leave and surface-local
+	 * coordinates belong to the surface now under the pointer. */
+	if (cursor_process_motion(manager->server, time_msec, &sx, &sy)) {
+		wlr_seat_pointer_notify_motion(seat->seat, time_msec, sx, sy);
+	}
 	wlr_seat_pointer_notify_frame(seat->seat);
 }
 

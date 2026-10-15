@@ -41,8 +41,19 @@ generate_window_handle(char handle[33])
 static void wex_window_resource_destroy(struct wl_resource *resource);
 
 void
+wex_window_release_pointer_capture(struct wex_window *frame)
+{
+	if (frame->manager->pointer_capture != frame) return;
+	frame->manager->pointer_capture = NULL;
+	wex_window_v1_send_foreign_pointer_capture(frame->resource, frame->capture_epoch, 0);
+	cursor_update_focus(frame->manager->server);
+}
+
+void
 wex_window_send_foreign_focus(struct wex_window *frame)
 {
+	if (!frame->scene || wex_scene_focus_target(frame->scene) != WEX_WINDOW_V1_FOCUS_TARGET_FRAME)
+		wex_window_release_pointer_capture(frame);
 	if (wl_resource_get_version(frame->resource) >= 6) {
 		wex_window_v1_send_foreign_focus(frame->resource, frame->focus_epoch,
 			frame->scene ? wex_scene_focus_target(frame->scene) : WEX_WINDOW_V1_FOCUS_TARGET_NONE);
@@ -613,6 +624,25 @@ handle_wex_window_configure_foreign(struct wl_client *client, struct wl_resource
 		WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
 }
 
+static void
+handle_wex_window_capture_foreign_pointer(struct wl_client *client, struct wl_resource *resource,
+		uint32_t epoch, uint32_t capture)
+{
+	struct wex_window *frame = wl_resource_get_user_data(resource);
+	bool allowed = capture == 1 && frame->scene && frame->view && frame->view->mapped &&
+		epoch == frame->focus_epoch &&
+		wex_scene_focus_target(frame->scene) == WEX_WINDOW_V1_FOCUS_TARGET_FRAME;
+	if (!capture && epoch == frame->capture_epoch) wex_window_release_pointer_capture(frame);
+	else if (allowed) {
+		if (frame->manager->pointer_capture && frame->manager->pointer_capture != frame)
+			wex_window_release_pointer_capture(frame->manager->pointer_capture);
+		frame->manager->pointer_capture = frame;
+		frame->capture_epoch = epoch;
+		cursor_update_focus(frame->manager->server);
+	}
+	wex_window_v1_send_foreign_pointer_capture(resource, epoch, allowed);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -629,6 +659,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.set_foreign_focus = handle_wex_window_set_foreign_focus,
 	.uncommit_foreign = handle_wex_window_uncommit_foreign,
 	.configure_foreign = handle_wex_window_configure_foreign,
+	.capture_foreign_pointer = handle_wex_window_capture_foreign_pointer,
 };
 
 static void
@@ -702,7 +733,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->foreign_windows);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 7, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 8, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);

@@ -314,6 +314,7 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 void
 wex_scene_destroy(struct wex_scene *scene)
 {
+	wex_window_release_pointer_capture(scene->frame);
 	wl_list_remove(&scene->focus_change.link);
 	wl_list_remove(&scene->native_commit.link);
 	struct view *native = scene->native;
