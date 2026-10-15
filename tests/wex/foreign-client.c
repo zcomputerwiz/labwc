@@ -33,7 +33,9 @@ struct observer {
 	struct wl_registry *registry;
 	struct wex_window_manager_v1 *manager;
 	struct zwlr_foreign_toplevel_manager_v1 *inventory;
-	struct item items[16];
+	/* Keep closed records stable for lifetime assertions. Shell stress tests
+	 * can withdraw/recreate up to 200 frames in the same native connection. */
+	struct item items[512];
 	unsigned count;
 	unsigned protocol_version;
 	char native_socket[108], native_xdisplay[128];
@@ -138,7 +140,7 @@ static void toplevel(void *data, struct zwlr_foreign_toplevel_manager_v1 *obj,
 		struct zwlr_foreign_toplevel_handle_v1 *handle)
 {
 	struct observer *observer = data;
-	assert(observer->count < 16 && observer->manager);
+	assert(observer->count < sizeof(observer->items) / sizeof(observer->items[0]) && observer->manager);
 	struct item *item = &observer->items[observer->count++];
 	item->handle = handle;
 	zwlr_foreign_toplevel_handle_v1_add_listener(handle, &standard, item);
