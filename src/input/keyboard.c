@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
+#include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <wlr/backend/multi.h>
 #include <wlr/backend/session.h>
@@ -16,6 +17,7 @@
 #include "osd.h"
 #include "regions.h"
 #include "view.h"
+#include "protocols/wex-window.h"
 #include "workspaces.h"
 
 enum lab_key_handled {
@@ -546,6 +548,22 @@ handle_compositor_keybindings(struct keyboard *keyboard,
 	/*
 	 * Handle compositor keybinds
 	 */
+	/* Explorer owns shell shortcuts for private Wine views and their hosted
+	 * native clients. Real xterm/foot Alt+Tab must enter the existing Win32
+	 * switcher, not labwc's cycle action or the terminal's input. Transfer
+	 * physical focus to the already-associated Wine frame, then deliver the
+	 * key through the ordinary wl_keyboard path. Never redirect a locked seat
+	 * or an unrelated native window on a stock labwc session. */
+	if (!locked && (event->keycode == KEY_LEFTMETA || event->keycode == KEY_RIGHTMETA ||
+			(event->keycode == KEY_TAB && (keyinfo.modifiers & WLR_MODIFIER_ALT)))) {
+		struct wlr_surface *surface = seat->seat->keyboard_state.focused_surface;
+		struct view *focused = surface ? view_from_wlr_surface(surface) : NULL;
+		struct view *frame = focused ? wex_scene_group_root(focused) : NULL;
+		if (frame && frame->wex_window) {
+			if (frame != focused) desktop_focus_view_forced(frame, false);
+			return LAB_KEY_HANDLED_FALSE;
+		}
+	}
 	cur_keybind = match_keybinding(server, &keyinfo, keyboard->is_virtual);
 	if (cur_keybind && (!locked || cur_keybind->allow_when_locked)) {
 		/*
