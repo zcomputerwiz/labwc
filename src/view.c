@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_security_context_v1.h>
 #include "common/box.h"
 #include "common/macros.h"
@@ -1836,6 +1837,22 @@ void
 view_adjust_for_layout_change(struct view *view)
 {
 	assert(view);
+	/* Wine places its shell edges and hosted frames through the shared zone.
+	 * Stock floating-window clamping moves the taskbar into its own reserved
+	 * work area during a real 150% output-scale change. Keep output bookkeeping,
+	 * but let Wine reconcile its geometry. Native views retain layout policy. */
+	struct wex_window *frame = view->wex_window;
+	if ((view->wex_window && (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP ||
+			view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL)) ||
+			(frame && frame->scene && wex_scene_server_decorated(frame->scene))) {
+		view_discover_output(view, NULL);
+		/* The old edge can temporarily lie outside the smaller logical output,
+		 * so scene intersection alone cannot deliver its new preferred scale. */
+		if (view->surface && output_is_usable(view->output))
+			wlr_fractional_scale_v1_notify_scale(view->surface, view->output->wlr_output->scale);
+		view_update_outputs(view);
+		return;
+	}
 
 	bool is_floating = view_is_floating(view);
 	bool use_natural = false;
