@@ -1441,6 +1441,16 @@ view_maximize(struct view *view, enum view_axis axis,
 		return;
 	}
 
+	/* Wine supplies hosted frame geometry through its zone and native resize
+	 * transaction. Applying labwc's independent maximize geometry here would
+	 * move the retained frame before foot has committed matching content. */
+	if (view->wex_window && view->wex_window->scene &&
+			wex_scene_server_decorated(view->wex_window->scene)) {
+		set_maximized(view, axis);
+		set_maximized(wex_scene_native(view->wex_window->scene), axis);
+		return;
+	}
+
 	view_set_shade(view, false);
 
 	if (axis != VIEW_AXIS_NONE) {

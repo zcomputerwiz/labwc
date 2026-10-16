@@ -738,10 +738,13 @@ wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
 	frame->resize_serial = resize->serial = serial;
 	resize->edges = edges;
 	resize->requested = *desired;
+	/* Maximized clients such as foot fill the available pixels; their floating
+	 * character-cell increments apply again when restoring the normal window. */
+	bool maximized = frame->view->maximized == VIEW_AXIS_BOTH;
 	resize->requested.width = constrain_axis(desired->width, hints.min_width, hints.max_width,
-		hints.base_width, hints.width_inc);
+		hints.base_width, maximized ? 1 : hints.width_inc);
 	resize->requested.height = constrain_axis(desired->height, hints.min_height, hints.max_height,
-		hints.base_height, hints.height_inc);
+		hints.base_height, maximized ? 1 : hints.height_inc);
 	if (edges & WLR_EDGE_LEFT) resize->requested.x += desired->width - resize->requested.width;
 	if (edges & WLR_EDGE_TOP) resize->requested.y += desired->height - resize->requested.height;
 	resize_configure(scene, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
