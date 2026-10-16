@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
@@ -460,6 +461,10 @@ static int publish_association(bool hosting)
 	struct wex_window_obj win, child;
 	bool main_alive = true, child_alive = false;
 	bool follow_configures = false;
+	bool choose_size = false;
+	int configure_delay = 0;
+	uint32_t waiting_configure = 0;
+	int64_t paint_at = 0;
 	uint32_t painted_configure = 0;
 	struct observer owner = {.protocol_version = 4};
 	struct zwlr_virtual_pointer_v1 *pointer = NULL;
@@ -484,8 +489,21 @@ static int publish_association(bool hosting)
 		assert(wl_display_dispatch_pending(native.display) >= 0);
 		assert(wl_display_dispatch_pending(owner.ctx.display) >= 0);
 		if (follow_configures && main_alive && win.configure_serial != painted_configure) {
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			int64_t milliseconds = now.tv_sec * 1000 + now.tv_nsec / 1000000;
+			if (waiting_configure != win.configure_serial) {
+				waiting_configure = win.configure_serial;
+				paint_at = milliseconds + configure_delay;
+			}
+			if (milliseconds >= paint_at) {
 			int width = win.configured_width > 0 ? win.configured_width : win.width;
 			int height = win.configured_height > 0 ? win.configured_height : win.height;
+			if (choose_size) {
+				if (width != 240 && width != win.width) width = width > 8 ? width - 8 : width;
+				if (height != 180 && height != win.height) height = height > 6 ? height - 6 : height;
+			}
+			if (win.defer_configure) xdg_surface_ack_configure(win.xdg_surface, win.configure_serial);
 			struct wex_buffer old = win.buffer;
 			assert(wex_buffer_create(&native, &win.buffer, width, height, 0xff338855));
 			win.width = width; win.height = height;
@@ -493,10 +511,11 @@ static int publish_association(bool hosting)
 			xdg_surface_set_window_geometry(win.xdg_surface, 0, 0, width, height);
 			wex_window_commit_buffer(&win);
 			wex_buffer_destroy(&old);
+			}
 		}
 		wl_display_flush(native.display);
 		wl_display_flush(owner.ctx.display);
-		if (poll(fds, 3, -1) < 0) return 1;
+		if (poll(fds, 3, follow_configures && configure_delay ? 10 : -1) < 0) return 1;
 		if (fds[0].revents & POLLIN) assert(wl_display_dispatch(native.display) >= 0);
 		if (fds[1].revents & POLLIN) assert(wl_display_dispatch(owner.ctx.display) >= 0);
 		if (fds[2].revents & (POLLIN | POLLHUP)) {
@@ -504,6 +523,14 @@ static int publish_association(bool hosting)
 			if (!fgets(command, sizeof(command), stdin) || !strcmp(command,"quit\n")) break;
 			if (!strcmp(command,"follow-configures\n")) {
 				follow_configures = true;
+				painted_configure = win.configure_serial;
+			}
+			if (!strcmp(command,"ignore-configures\n")) follow_configures = false;
+			if (!strcmp(command,"follow-delayed\n") || !strcmp(command,"follow-chosen\n")) {
+				follow_configures = true;
+				choose_size = !strcmp(command,"follow-chosen\n");
+				configure_delay = choose_size ? 0 : 200;
+				win.defer_configure = configure_delay != 0;
 				painted_configure = win.configure_serial;
 			}
 			if (!strcmp(command,"child\n") && main_alive && !child_alive) {
