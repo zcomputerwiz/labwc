@@ -203,12 +203,14 @@ static void map(struct wex_window_obj *win, struct wex_context *ctx, const char 
 }
 static int association_test(void);
 static int publish_association(bool hosting);
+static int publish_external(const char *title);
 static int scene_test(void);
 static int resize_test(void);
 static int constraints_test(void);
 static int xwayland_constraints_test(void);
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--publish-external")) return publish_external(argv[2]);
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	if (argc == 2 && !strcmp(argv[1], "--association")) return association_test();
 	if (argc == 2 && !strcmp(argv[1], "--publish-association")) return publish_association(false);
@@ -657,6 +659,43 @@ static int publish_association(bool hosting)
 	wex_context_finish(&native);
 	wl_display_disconnect(owner.ctx.display);
 	return 0;
+}
+
+static int publish_external(const char *name)
+{
+    struct observer owner = {.protocol_version = 9};
+    struct item *item = NULL;
+    setvbuf(stdin, NULL, _IONBF, 0);
+    observe(&owner);
+    for (unsigned attempt = 0; attempt < 500 && !item; ++attempt) {
+        pump(&owner);
+        for (unsigned i = 0; i < owner.count; ++i)
+            if (!strcmp(owner.items[i].title, name) && owner.items[i].token[0] && owner.items[i].controller[0])
+                item = &owner.items[i];
+        if (!item) usleep(10000);
+    }
+    assert(item);
+    fprintf(stderr, "EXTERNAL %s decoration=%u size=%dx%d\n", name, item->mode, item->width, item->height);
+    printf("LEASE %s %s\n", item->token, item->controller);
+    fflush(stdout);
+    for (;;) {
+        struct pollfd fds[] = {{wl_display_get_fd(owner.ctx.display), POLLIN, 0}, {0, POLLIN, 0}};
+        assert(wl_display_dispatch_pending(owner.ctx.display) >= 0);
+        wl_display_flush(owner.ctx.display);
+        if (poll(fds, 2, -1) < 0) return 1;
+        if (fds[0].revents & POLLIN) assert(wl_display_dispatch(owner.ctx.display) >= 0);
+        if (fds[1].revents & (POLLIN | POLLHUP)) {
+            char command[32];
+            if (!fgets(command, sizeof(command), stdin) || !strcmp(command, "quit\n")) break;
+            if (!strcmp(command, "release\n") && item->foreign) {
+                wex_foreign_window_v1_destroy(item->foreign);
+                item->foreign = NULL;
+                pump(&owner);
+            }
+        }
+    }
+    wl_display_disconnect(owner.ctx.display);
+    return 0;
 }
 
 struct resize_reply { uint32_t serial, stage, configure_serial; int x, y, width, height; };
