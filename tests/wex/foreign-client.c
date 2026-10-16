@@ -1320,14 +1320,30 @@ resize_test(void)
 	scene_pump(&bridge, &native);
 	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE);
 	capture_scene("resize-held");
+	scene_pump(&bridge, &native);
+	assert(target.output_count > 0);
+	puts("PASS retained native pixels preserve visible output membership");
 	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 21, 40, 310, 230);
 	pump(&bridge);
 	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	bool fractional = getenv("WEX_RESIZE_FRACTIONAL") != NULL;
+	resize_buffer(&frame, fractional ? 372 : 371, 290, 0xffffff00);
+	scene_pump(&bridge, &native);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 20, 40, 310, 230);
+	pump(&bridge);
+	assert(!resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	resize_buffer(&frame, fractional ? 371 : 370, 290, 0xffffff00);
+	scene_pump(&bridge, &native);
 	wex_window_v1_commit_foreign_resize(frame.wex_win, 2, 20, 40, 310, 230);
 	scene_pump(&bridge, &native);
 	assert(resize_find(&status, 2, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
 	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE && status.captured);
 	capture_scene("resize-complete");
+	if (fractional) {
+		resize_buffer(&frame, 370, 290, 0xffffff00);
+		scene_pump(&bridge, &native);
+	}
+	puts("PASS exact integer-scale extents and bounded fractional border quantization");
 	puts("PASS constrained left/top anchors, delayed ack/buffer, client-chosen size, retained roots and atomic matching frame");
 
 	/* A new intent must not be completed by the superseded configure's ack. */

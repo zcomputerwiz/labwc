@@ -520,6 +520,14 @@ static void
 resize_frame_done(struct wl_listener *listener, void *data)
 {
 	struct resize_transaction *resize = wl_container_of(listener, resize, frame_done);
+	struct wlr_scene_output *output = resize->native.node->primary_output;
+	/* Disabling the live roots can send wl_surface.leave even though their
+	 * retained buffers are still visible. Reassert that visible output before
+	 * frame callbacks: clients such as foot suspend rendering after leave. */
+	if (output) {
+		wlr_surface_send_enter(resize->scene->native->surface, output->output);
+		wlr_surface_send_enter(resize->scene->frame->view->surface, output->output);
+	}
 	wlr_surface_send_frame_done(resize->scene->native->surface, data);
 	wlr_surface_send_frame_done(resize->scene->frame->view->surface, data);
 }
@@ -751,11 +759,19 @@ wex_scene_commit_resize(struct wex_window *frame, uint32_t serial, const struct 
 		return;
 	}
 	struct wlr_surface *surface = frame->view->surface;
+	/* Pixel-aligned Win32 borders can span one more or fewer logical pixels
+	 * after fractional scaling. The client hole must still match exactly and
+	 * remain inside the newly committed frame. Integer-scale peers retain the
+	 * strict extent check, including rejection of a one-pixel stale frame. */
+	float scale = frame->view->output ? frame->view->output->wlr_output->scale : 1;
+	int tolerance = scale > 1 && scale != (int)scale ? 1 : 0;
 	if (!resize->ready || !surface->buffer || client->x != scene->client.x || client->y != scene->client.y ||
 			client->width != scene->native->current.width || client->height != scene->native->current.height ||
 			client->width != resize->actual.width || client->height != resize->actual.height ||
-			surface->current.width != resize->frame_width - scene->client.width + client->width ||
-			surface->current.height != resize->frame_height - scene->client.height + client->height ||
+			abs(surface->current.width - (resize->frame_width - scene->client.width + client->width)) > tolerance ||
+			abs(surface->current.height - (resize->frame_height - scene->client.height + client->height)) > tolerance ||
+			client->width > surface->current.width - client->x ||
+			client->height > surface->current.height - client->y ||
 			(resize->rollback && (client->width != resize->original.width || client->height != resize->original.height))) {
 		resize_event(frame, serial, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE,
 			resize->configure_serial, NULL);

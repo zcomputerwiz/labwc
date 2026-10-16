@@ -84,7 +84,7 @@ xdg-decoration-unstable-v1-protocol.c: $(WAYLAND_PROTOCOLS_DIR)/unstable/xdg-dec
 shm-common.o: shm-common.c shm-common.h $(PROTO_GEN_H)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-%.o: %.c $(PROTO_GEN_H)
+%.o: %.c shm-common.h $(PROTO_GEN_H)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 zones-client: zones-client.o $(COMMON_OBJS)

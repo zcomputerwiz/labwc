@@ -249,6 +249,22 @@ static const struct xdg_wm_base_listener wm_base_listener = {
 	.ping = xdg_wm_base_ping,
 };
 
+static void output_geometry(void *data, struct wl_output *output, int32_t x, int32_t y,
+		int32_t physical_width, int32_t physical_height, int32_t subpixel,
+		const char *make, const char *model, int32_t transform)
+{
+}
+
+static void output_mode(void *data, struct wl_output *output, uint32_t flags,
+		int32_t width, int32_t height, int32_t refresh)
+{
+}
+
+static const struct wl_output_listener output_listener = {
+	.geometry = output_geometry,
+	.mode = output_mode,
+};
+
 static void
 registry_handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version)
@@ -258,6 +274,10 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		ctx->compositor = wl_registry_bind(registry, name,
 			&wl_compositor_interface, version < 4 ? version : 4);
+	} else if (!strcmp(interface, wl_output_interface.name) && !ctx->output) {
+		/* Bind the headless output so surface enter/leave can be observed. */
+		ctx->output = wl_registry_bind(registry, name, &wl_output_interface, 1);
+		wl_output_add_listener(ctx->output, &output_listener, ctx);
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		ctx->shm = wl_registry_bind(registry, name,
 			&wl_shm_interface, 1);
@@ -379,6 +399,9 @@ wex_context_finish(struct wex_context *ctx)
 	if (ctx->compositor) {
 		wl_compositor_destroy(ctx->compositor);
 	}
+	if (ctx->output) {
+		wl_output_destroy(ctx->output);
+	}
 	if (ctx->registry) {
 		wl_registry_destroy(ctx->registry);
 	}
@@ -493,6 +516,24 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
 	.close = handle_xdg_toplevel_close,
 };
 
+static void surface_enter(void *data, struct wl_surface *surface, struct wl_output *output)
+{
+	struct wex_window_obj *win = data;
+	win->output_count++;
+}
+
+static void surface_leave(void *data, struct wl_surface *surface, struct wl_output *output)
+{
+	struct wex_window_obj *win = data;
+	assert(win->output_count);
+	win->output_count--;
+}
+
+static const struct wl_surface_listener surface_listener = {
+	.enter = surface_enter,
+	.leave = surface_leave,
+};
+
 bool
 wex_window_init(struct wex_window_obj *win, struct wex_context *ctx,
 		const char *title, int width, int height, uint32_t color)
@@ -507,6 +548,7 @@ wex_window_init(struct wex_window_obj *win, struct wex_context *ctx,
 	win->color = color;
 
 	win->surface = wl_compositor_create_surface(ctx->compositor);
+	wl_surface_add_listener(win->surface, &surface_listener, win);
 	if (!win->surface) {
 		return false;
 	}

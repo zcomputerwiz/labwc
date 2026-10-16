@@ -15,6 +15,7 @@ struct wex_context {
 	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_compositor *compositor;
+	struct wl_output *output;
 	struct wl_subcompositor *subcompositor;
 	struct wl_shm *shm;
 	struct xdg_wm_base *wm_base;
@@ -69,6 +70,7 @@ struct wex_window_obj {
 	uint32_t color;
 
 	bool configured;
+	unsigned output_count;
 	bool defer_configure;
 	uint32_t configure_serial;
 	bool closed;
