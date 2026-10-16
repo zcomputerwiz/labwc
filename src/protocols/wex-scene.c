@@ -624,10 +624,16 @@ resize_native_committed(struct wex_scene *scene)
 		WLR_SURFACE_STATE_SCALE | WLR_SURFACE_STATE_TRANSFORM;
 	if (!resize->acknowledged ||
 			(int32_t)(xdg->current.configure_serial - resize->configure_serial) < 0) return;
-	/* An ack followed by an otherwise empty commit changes xdg state, not
-	 * content. Keep waiting for a buffer/damage/viewport response. Retained
-	 * buffers may legitimately be reused with damage or new viewport state. */
-	if (!(scene->native->surface->current.committed & content)) return;
+	/* Forward readiness still needs a content response. For rollback only,
+	 * an acknowledged state commit can confirm the exact retained original
+	 * buffer and dimensions: there is no new size or content to publish.
+	 * A different buffer, geometry or unacknowledged configure cannot use
+	 * this path. In particular, a bare ack request is never sufficient. */
+	bool original_buffer = resize->rollback && scene->native->surface->buffer &&
+		&scene->native->surface->buffer->base == resize->native.buffer &&
+		scene->native->current.width == resize->original.width &&
+		scene->native->current.height == resize->original.height;
+	if (!(scene->native->surface->current.committed & content) && !original_buffer) return;
 	struct wlr_box previous = resize->actual;
 	resize->actual = scene->native->current;
 	if (resize->edges & WLR_EDGE_LEFT)

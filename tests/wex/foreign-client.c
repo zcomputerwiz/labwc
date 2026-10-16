@@ -464,6 +464,7 @@ static int publish_association(bool hosting)
 	bool main_alive = true, child_alive = false;
 	bool follow_configures = false;
 	bool choose_size = false;
+	bool fail_rollback = false;
 	int configure_delay = 0;
 	uint32_t waiting_configure = 0;
 	int64_t paint_at = 0;
@@ -490,6 +491,15 @@ static int publish_association(bool hosting)
 		};
 		assert(wl_display_dispatch_pending(native.display) >= 0);
 		assert(wl_display_dispatch_pending(owner.ctx.display) >= 0);
+		if (fail_rollback && main_alive && win.configure_serial != painted_configure) {
+			painted_configure = win.configure_serial;
+			/* Acknowledge the new size without content, but ignore restoration
+			 * of the unchanged original buffer. This must still reach FAILED. */
+			if (win.configured_width != win.width || win.configured_height != win.height) {
+				xdg_surface_ack_configure(win.xdg_surface, win.configure_serial);
+				wl_surface_commit(win.surface);
+			}
+		}
 		if (follow_configures && main_alive && win.configure_serial != painted_configure) {
 			struct timespec now;
 			clock_gettime(CLOCK_MONOTONIC, &now);
@@ -528,6 +538,12 @@ static int publish_association(bool hosting)
 				painted_configure = win.configure_serial;
 			}
 			if (!strcmp(command,"ignore-configures\n")) follow_configures = false;
+			if (!strcmp(command,"fail-rollback\n")) {
+				follow_configures = false;
+				fail_rollback = true;
+				win.defer_configure = true;
+				painted_configure = win.configure_serial;
+			}
 			if (!strcmp(command,"follow-delayed\n") || !strcmp(command,"follow-chosen\n")) {
 				follow_configures = true;
 				choose_size = !strcmp(command,"follow-chosen\n");
@@ -1446,6 +1462,50 @@ resize_test(void)
 	scene_pump(&bridge, &native);
 	assert(status.captured);
 	unsigned edges[] = {1, 2, 4, 8, 5, 9, 6, 10};
+	/* Same dimensions do not prove retained-buffer identity. */
+	wex_window_v1_resize_foreign(frame.wex_win, 18, 10, 170, 160, 350, 270);
+	scene_pump(&bridge, &native);
+	resize_buffer(&target, 310, 230, 0xff0000ff);
+	scene_pump(&bridge, &native);
+	wex_window_v1_cancel_foreign_resize(frame.wex_win, 18);
+	scene_pump(&bridge, &native);
+	xdg_surface_ack_configure(target.xdg_surface, target.configure_serial);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	assert(!resize_find(&status, 18, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	wex_window_commit_buffer(&target);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 18, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 18, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 18, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	/* State-only forward commits remain unready. Rollback may confirm the
+	 * exact retained original buffer, but only after its own ack and commit. */
+	wex_window_v1_resize_foreign(frame.wex_win, 19, 10, 170, 160, 350, 270);
+	scene_pump(&bridge, &native);
+	xdg_surface_ack_configure(target.xdg_surface, target.configure_serial);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	assert(!resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	wex_window_v1_cancel_foreign_resize(frame.wex_win, 19);
+	scene_pump(&bridge, &native);
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	assert(!resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	xdg_surface_ack_configure(target.xdg_surface, target.configure_serial);
+	assert(wl_display_roundtrip(native.display) >= 0);
+	pump(&bridge);
+	assert(!resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY));
+	wl_surface_commit(target.surface);
+	scene_pump(&bridge, &native);
+	reply = resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY);
+	assert(reply && reply->width == 310 && reply->height == 230);
+	wex_window_v1_commit_foreign_resize(frame.wex_win, 19, 20, 40, 310, 230);
+	scene_pump(&bridge, &native);
+	assert(resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_CANCELLED));
+	assert(!resize_find(&status, 19, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE));
+	assert(status.group == WEX_WINDOW_V1_GROUP_STATUS_ACTIVE && status.captured);
+	puts("PASS retained original buffer rollback requires acknowledged surface commit, never forward readiness");
 	int x = 170, y = 160, width = 310, height = 230;
 	for (unsigned i = 0; i < 8; ++i) {
 		int w = width + ((edges[i] & 12) ? 2 : 0);
