@@ -573,9 +573,11 @@ resize_configure(struct wex_scene *scene, uint32_t stage)
 	struct resize_transaction *resize = scene->resize;
 	resize->acknowledged = resize->ready = false;
 	/* Keep the xdg serial independent of the controller serial. Calling set_size
-	 * explicitly also sends a fresh configure for same-sized rollback requests. */
-	resize->configure_serial = wlr_xdg_toplevel_set_size(
-		xdg_surface_from_view(scene->native)->toplevel, resize->requested.width, resize->requested.height);
+	 * explicitly also sends a fresh configure for same-sized rollback requests.
+	 * XWayland instead confirms its configured size with a surface commit. */
+	struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
+	resize->configure_serial = xdg ? wlr_xdg_toplevel_set_size(
+		xdg->toplevel, resize->requested.width, resize->requested.height) : 0;
 	view_move_resize(scene->native, resize->requested);
 	resize_event(scene->frame, resize->serial, stage, resize->configure_serial,
 		&resize->requested);
@@ -618,12 +620,20 @@ static void
 resize_native_committed(struct wex_scene *scene)
 {
 	struct resize_transaction *resize = scene->resize;
-	struct wlr_xdg_surface *xdg = xdg_surface_from_view(scene->native);
+	struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
 	uint32_t content = WLR_SURFACE_STATE_BUFFER | WLR_SURFACE_STATE_SURFACE_DAMAGE |
 		WLR_SURFACE_STATE_BUFFER_DAMAGE | WLR_SURFACE_STATE_VIEWPORT |
 		WLR_SURFACE_STATE_SCALE | WLR_SURFACE_STATE_TRANSFORM;
-	if (!resize->acknowledged ||
-			(int32_t)(xdg->current.configure_serial - resize->configure_serial) < 0) return;
+	if (xdg) {
+		if (!resize->acknowledged ||
+				(int32_t)(xdg->current.configure_serial - resize->configure_serial) < 0) return;
+	} else {
+		/* XWayland has no xdg configure acknowledgement. For real xterm,
+		 * readiness is its content commit at the requested, hint-constrained
+		 * dimensions. Old-size damage cannot complete a new transaction. */
+		if (scene->native->current.width != resize->requested.width ||
+				scene->native->current.height != resize->requested.height) return;
+	}
 	/* Forward readiness still needs a content response. For rollback only,
 	 * an acknowledged state commit can confirm the exact retained original
 	 * buffer and dimensions: there is no new size or content to publish.
@@ -684,7 +694,7 @@ wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
 		return;
 	}
 	struct view_size_hints hints = scene ? view_get_size_hints(scene->native) : (struct view_size_hints){0};
-	if (!scene || scene->native->type != LAB_XDG_SHELL_VIEW ||
+	if (!scene ||
 			hints.min_width > 32768 || hints.min_height > 32768 ||
 			frame->manager->pointer_capture != frame || frame->capture_epoch != frame->focus_epoch ||
 			wex_scene_focus_target(scene) != WEX_WINDOW_V1_FOCUS_TARGET_FRAME ||
@@ -726,8 +736,12 @@ wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
 			resize_event(frame, serial, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE, 0, NULL);
 			return;
 		}
-		resize->ack.notify = resize_ack;
-		wl_signal_add(&xdg_surface_from_view(scene->native)->events.ack_configure, &resize->ack);
+		wl_list_init(&resize->ack.link);
+		struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
+		if (xdg) {
+			resize->ack.notify = resize_ack;
+			wl_signal_add(&xdg->events.ack_configure, &resize->ack);
+		}
 		resize->frame_done.notify = resize_frame_done;
 		wl_signal_add(&resize->native.node->events.frame_done, &resize->frame_done);
 		scene->resize = resize;
@@ -794,8 +808,11 @@ wex_scene_commit_resize(struct wex_window *frame, uint32_t serial, const struct 
 	resize_finish(scene, stage);
 	wlr_xdg_surface_get_geometry(xdg_surface_from_view(frame->view), &geometry);
 	wlr_scene_node_set_position(&frame->view->content_tree->node, -geometry.x, -geometry.y);
-	wlr_xdg_surface_get_geometry(xdg_surface_from_view(scene->native), &geometry);
-	wlr_scene_node_set_position(&scene->native->content_tree->node, -geometry.x, -geometry.y);
+	struct wlr_xdg_surface *native_xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
+	if (native_xdg) {
+		wlr_xdg_surface_get_geometry(native_xdg, &geometry);
+		wlr_scene_node_set_position(&scene->native->content_tree->node, -geometry.x, -geometry.y);
+	}
 	view_move(scene->native, actual.x, actual.y);
 	wlr_xdg_surface_get_geometry(xdg_surface_from_view(frame->view), &geometry);
 	view_move(frame->view, actual.x - client->x + geometry.x, actual.y - client->y + geometry.y);
