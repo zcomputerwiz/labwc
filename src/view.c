@@ -2348,6 +2348,22 @@ view_move_to_front(struct view *view)
 	if (view != root) {
 		move_to_front(view);
 	}
+	/* Hosting replaces the native view as the stacking root, but native
+	 * transient relationships still belong to the application. Real QTerminal's
+	 * Exit dialog must stay above its main window when its taskbar item raises
+	 * the Wine frame. Preserve the same child ordering used for ordinary views. */
+	if (view->wex_window && view->wex_window->scene) {
+		struct wl_array children;
+		struct view **child;
+		wl_array_init(&children);
+		view_append_children(wex_scene_native(view->wex_window->scene), &children);
+		wl_array_for_each(child, &children) {
+			struct view *child_root = wex_scene_group_root(*child);
+			if (child_root != view && child_root->mapped && !child_root->minimized)
+				move_to_front(child_root);
+		}
+		wl_array_release(&children);
+	}
 
 	cursor_update_focus(view->server);
 	desktop_update_top_layer_visibility(view->server);
