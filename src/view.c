@@ -1840,11 +1840,15 @@ view_adjust_for_layout_change(struct view *view)
 	/* Wine places its shell edges and hosted frames through the shared zone.
 	 * Stock floating-window clamping moves the taskbar into its own reserved
 	 * work area during a real 150% output-scale change. Keep output bookkeeping,
-	 * but let Wine reconcile its geometry. Native views retain layout policy. */
+	 * but let Wine reconcile its geometry. Its associated native client shares
+	 * that policy; independent maximize placement would break the retained
+	 * group before the new frame/client transaction can be committed. */
 	struct wex_window *frame = view->wex_window;
 	if ((view->wex_window && (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP ||
 			view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL)) ||
-			(frame && frame->scene && wex_scene_server_decorated(frame->scene))) {
+            (frame && frame->scene && wex_scene_server_decorated(frame->scene)) ||
+            (view->wex_foreign_frame && view->wex_foreign_frame->scene &&
+             wex_scene_server_decorated(view->wex_foreign_frame->scene))) {
 		view_discover_output(view, NULL);
 		/* The old edge can temporarily lie outside the smaller logical output,
 		 * so scene intersection alone cannot deliver its new preferred scale. */

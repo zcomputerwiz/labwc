@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <assert.h>
 #include <stdlib.h>
+#include <math.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -30,6 +31,10 @@ struct resize_transaction {
 	struct wex_scene *scene;
 	uint32_t serial, configure_serial, edges;
 	bool acknowledged, ready, rollback;
+	bool automatic, frame_seen;
+	uint32_t group_serial;
+	struct wlr_box client;
+	int extent_tolerance;
 	struct wlr_box original, requested, actual;
 	int frame_width, frame_height;
 	int frame_x, frame_y, frame_content_x, frame_content_y;
@@ -54,6 +59,7 @@ struct wex_scene {
 	struct wl_listener native_commit;
 	enum ssd_mode restore_decor;
 	bool state_sync;
+	float scale;
 	struct resize_transaction *resize;
 };
 
@@ -61,6 +67,7 @@ static void resize_rollback(struct wex_scene *scene);
 static void resize_native_committed(struct wex_scene *scene);
 static void resize_hold(struct wex_scene *scene);
 static void resize_finish(struct wex_scene *scene, uint32_t stage);
+static void reconfigure_commit(struct wex_scene *scene);
 
 static struct wlr_scene_buffer *
 find_surface_buffer(struct wlr_scene_node *node, struct wlr_surface *surface)
@@ -199,6 +206,10 @@ frame_committed(struct wl_listener *listener, void *data)
 	struct wex_scene *scene = wl_container_of(listener, scene, commit);
 	struct wlr_surface *surface = scene->frame->view->surface;
 	if (scene->resize && surface->buffer) {
+		if (scene->resize->automatic) {
+			scene->resize->frame_seen = true;
+			reconfigure_commit(scene);
+		}
 		resize_hold(scene);
 		if (scene->frame->view->output)
 			wlr_output_schedule_frame(scene->frame->view->output->wlr_output);
@@ -311,6 +322,7 @@ wex_scene_create(struct wex_window *frame, struct view *native, const struct wlr
 	scene->frame = frame;
 	scene->native = native;
 	scene->client = *client;
+	scene->scale = view->output ? view->output->wlr_output->scale : 1;
 	scene->restore_decor = view_get_ssd_mode(native);
 	watch_buffer(&scene->root, root);
 	watch_buffer(&scene->native_root, native_root);
@@ -553,8 +565,14 @@ resize_finish(struct wex_scene *scene, uint32_t stage)
 		wlr_xdg_surface_get_geometry(xdg, &geometry);
 		wlr_scene_node_set_position(&views[i]->content_tree->node, -geometry.x, -geometry.y);
 	}
-	resize_event(scene->frame, resize->serial, stage, resize->configure_serial,
-		&resize->actual);
+	if (resize->automatic) {
+		wex_window_v1_send_configured_foreign(scene->frame->resource, resize->group_serial,
+			stage == WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE ?
+			WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);
+	} else {
+		resize_event(scene->frame, resize->serial, stage, resize->configure_serial,
+			&resize->actual);
+	}
 	free(resize);
 }
 
@@ -562,6 +580,10 @@ static int
 resize_timeout(void *data)
 {
 	struct wex_scene *scene = data;
+	if (scene->resize->automatic) {
+		wex_window_drop_scene(scene->frame);
+		return 0;
+	}
 	if (!scene->resize->rollback) resize_rollback(scene);
 	else wex_window_drop_scene(scene->frame);
 	return 0;
@@ -579,8 +601,9 @@ resize_configure(struct wex_scene *scene, uint32_t stage)
 	resize->configure_serial = xdg ? wlr_xdg_toplevel_set_size(
 		xdg->toplevel, resize->requested.width, resize->requested.height) : 0;
 	view_move_resize(scene->native, resize->requested);
-	resize_event(scene->frame, resize->serial, stage, resize->configure_serial,
-		&resize->requested);
+	if (!resize->automatic)
+		resize_event(scene->frame, resize->serial, stage, resize->configure_serial,
+			&resize->requested);
 	wl_event_source_timer_update(resize->timeout, 2000);
 	resize_hold(scene);
 }
@@ -589,7 +612,7 @@ static void
 resize_rollback(struct wex_scene *scene)
 {
 	struct resize_transaction *resize = scene->resize;
-	if (!resize || resize->rollback) return;
+	if (!resize || resize->rollback || resize->automatic) return;
 	resize->rollback = true;
 	resize->requested = resize->original;
 	resize->edges = 0;
@@ -611,8 +634,9 @@ resize_ack(struct wl_listener *listener, void *data)
 	 * acknowledgement of a superseded configure cannot satisfy the new request. */
 	if (!resize->acknowledged && (int32_t)(configure->serial - resize->configure_serial) >= 0) {
 		resize->acknowledged = true;
-		resize_event(resize->scene->frame, resize->serial, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED,
-			resize->configure_serial, &resize->requested);
+		if (!resize->automatic)
+			resize_event(resize->scene->frame, resize->serial, WEX_WINDOW_V1_RESIZE_STAGE_ACKNOWLEDGED,
+				resize->configure_serial, &resize->requested);
 	}
 }
 
@@ -652,6 +676,10 @@ resize_native_committed(struct wex_scene *scene)
 		resize->actual.y = resize->requested.y + resize->requested.height - resize->actual.height;
 	if (resize->ready && wlr_box_equal(&previous, &resize->actual)) return;
 	resize->ready = true;
+	if (resize->automatic) {
+		reconfigure_commit(scene);
+		return;
+	}
 	resize_event(scene->frame, resize->serial, WEX_WINDOW_V1_RESIZE_STAGE_NATIVE_READY,
 		resize->configure_serial, &resize->actual);
 	if (scene->native->output) wlr_output_schedule_frame(scene->native->output->wlr_output);
@@ -684,6 +712,106 @@ constrain_axis(int value, int min, int max, int base, int increment)
 	return value;
 }
 
+static struct resize_transaction *
+resize_begin(struct wex_scene *scene)
+{
+	struct resize_transaction *resize = znew(*resize);
+	struct view *view = scene->frame->view;
+	resize->scene = scene;
+	resize->original = scene->native->current;
+	resize->frame_width = view->surface->current.width;
+	resize->frame_height = view->surface->current.height;
+	resize->frame_x = view->scene_tree->node.x;
+	resize->frame_y = view->scene_tree->node.y;
+	resize->frame_content_x = view->content_tree->node.x;
+	resize->frame_content_y = view->content_tree->node.y;
+	resize->native_content_x = scene->native->content_tree->node.x;
+	resize->native_content_y = scene->native->content_tree->node.y;
+	resize->native_x = scene->native->scene_tree->node.x;
+	resize->native_y = scene->native->scene_tree->node.y;
+	bool snapshots = snapshot_create(&resize->native, scene->native_root.buffer, scene->native->surface);
+	for (unsigned i = 0; i < 4 && snapshots; ++i)
+		snapshots = snapshot_create(&resize->ring[i], scene->ring[i].buffer, view->surface);
+	resize->timeout = wl_event_loop_add_timer(wl_display_get_event_loop(
+		scene->frame->manager->server->wl_display), resize_timeout, scene);
+	if (!snapshots || !resize->timeout) {
+		for (unsigned i = 0; i < 4; ++i) snapshot_destroy(&resize->ring[i]);
+		snapshot_destroy(&resize->native);
+		if (resize->timeout) wl_event_source_remove(resize->timeout);
+		free(resize);
+		return NULL;
+	}
+	wl_list_init(&resize->ack.link);
+	struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
+	if (xdg) {
+		resize->ack.notify = resize_ack;
+		wl_signal_add(&xdg->events.ack_configure, &resize->ack);
+	}
+	resize->frame_done.notify = resize_frame_done;
+	wl_signal_add(&resize->native.node->events.frame_done, &resize->frame_done);
+	scene->resize = resize;
+	return resize;
+}
+
+static void
+reconfigure_commit(struct wex_scene *scene)
+{
+	struct resize_transaction *resize = scene->resize;
+	struct wlr_surface *surface = scene->frame->view->surface;
+	struct wlr_box *client = &resize->client;
+	if (!resize->ready || !resize->frame_seen || !surface->buffer ||
+			abs(surface->current.width - resize->frame_width) > resize->extent_tolerance ||
+			abs(surface->current.height - resize->frame_height) > resize->extent_tolerance ||
+			client->width > surface->current.width - client->x ||
+			client->height > surface->current.height - client->y ||
+			scene->native->current.width != client->width ||
+			scene->native->current.height != client->height) return;
+	scene->client = *client;
+	scene->scale = scene->frame->view->output ? scene->frame->view->output->wlr_output->scale : 1;
+	resize_finish(scene, WEX_WINDOW_V1_RESIZE_STAGE_COMPLETE);
+	apply_ring(scene);
+	wex_scene_view_moved(scene->frame->view);
+	wex_foreign_window_update(scene->native);
+	wex_window_send_foreign_focus(scene->frame);
+}
+
+bool
+wex_scene_reconfigure(struct wex_window *frame, uint32_t serial, const struct wlr_box *client)
+{
+	struct wex_scene *scene = frame->scene;
+	if (!scene || wex_scene_matches(scene, client)) return false;
+	/* Output scale changes alter frame-local margins and the maximized native
+	 * size together. Use the existing retained-root transaction, without an
+	 * interactive pointer grab or another protocol version. */
+	if (scene->resize || client->x < 0 || client->y < 0 || client->width <= 0 || client->height <= 0 ||
+			client->width > 32768 || client->height > 32768) return false;
+	struct resize_transaction *resize = resize_begin(scene);
+	if (!resize) return false;
+	float scale = frame->view->output ? frame->view->output->wlr_output->scale : 1;
+	double ratio = scene->scale / scale;
+	int right = resize->frame_width - scene->client.x - scene->client.width;
+	int bottom = resize->frame_height - scene->client.y - scene->client.height;
+	resize->automatic = true;
+	resize->group_serial = serial;
+	resize->client = *client;
+	resize->extent_tolerance = scale != scene->scale || scale != (int)scale ? 1 : 0;
+	resize->frame_width = client->x + client->width + round(right * ratio);
+	resize->frame_height = client->y + client->height + round(bottom * ratio);
+	/* A maximized frame still needs an xdg configure in the new logical
+	 * coordinate space. Otherwise Wine correctly refuses to commit a buffer
+	 * smaller than the old maximized configure, so neither root can publish. */
+	wlr_xdg_toplevel_set_size(xdg_surface_from_view(frame->view)->toplevel,
+		resize->frame_width, resize->frame_height);
+	struct wlr_box geometry = {0};
+	wlr_xdg_surface_get_geometry(xdg_surface_from_view(frame->view), &geometry);
+	resize->requested = (struct wlr_box){
+		frame->view->pending.x + client->x - geometry.x,
+		frame->view->pending.y + client->y - geometry.y,
+		client->width, client->height};
+	resize_configure(scene, WEX_WINDOW_V1_RESIZE_STAGE_ACCEPTED);
+	return true;
+}
+
 void
 wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
 		const struct wlr_box *desired)
@@ -703,48 +831,17 @@ wex_scene_resize(struct wex_window *frame, uint32_t serial, uint32_t edges,
 			desired->width > 32768 || desired->height > 32768 ||
 			desired->x < -1000000 || desired->x > 1000000 ||
 			desired->y < -1000000 || desired->y > 1000000 ||
-			(scene->resize && scene->resize->rollback)) {
+			(scene->resize && (scene->resize->rollback || scene->resize->automatic))) {
 		resize_event(frame, serial, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE, 0, NULL);
 		return;
 	}
 	struct resize_transaction *resize = scene->resize;
 	if (!resize) {
-		resize = znew(*resize);
-		resize->scene = scene;
-		resize->original = scene->native->current;
-		struct view *view = frame->view;
-		resize->frame_width = view->surface->current.width;
-		resize->frame_height = view->surface->current.height;
-		resize->frame_x = view->scene_tree->node.x;
-		resize->frame_y = view->scene_tree->node.y;
-		resize->frame_content_x = view->content_tree->node.x;
-		resize->frame_content_y = view->content_tree->node.y;
-		resize->native_content_x = scene->native->content_tree->node.x;
-		resize->native_content_y = scene->native->content_tree->node.y;
-		resize->native_x = scene->native->scene_tree->node.x;
-		resize->native_y = scene->native->scene_tree->node.y;
-		bool snapshots = snapshot_create(&resize->native, scene->native_root.buffer, scene->native->surface);
-		for (unsigned i = 0; i < 4 && snapshots; ++i)
-			snapshots = snapshot_create(&resize->ring[i], scene->ring[i].buffer, view->surface);
-		resize->timeout = wl_event_loop_add_timer(wl_display_get_event_loop(
-			frame->manager->server->wl_display), resize_timeout, scene);
-		if (!snapshots || !resize->timeout) {
-			for (unsigned i = 0; i < 4; ++i) snapshot_destroy(&resize->ring[i]);
-			snapshot_destroy(&resize->native);
-			if (resize->timeout) wl_event_source_remove(resize->timeout);
-			free(resize);
+		resize = resize_begin(scene);
+		if (!resize) {
 			resize_event(frame, serial, WEX_WINDOW_V1_RESIZE_STAGE_UNAVAILABLE, 0, NULL);
 			return;
 		}
-		wl_list_init(&resize->ack.link);
-		struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(scene->native->surface);
-		if (xdg) {
-			resize->ack.notify = resize_ack;
-			wl_signal_add(&xdg->events.ack_configure, &resize->ack);
-		}
-		resize->frame_done.notify = resize_frame_done;
-		wl_signal_add(&resize->native.node->events.frame_done, &resize->frame_done);
-		scene->resize = resize;
 	} else {
 		resize_event(frame, resize->serial, WEX_WINDOW_V1_RESIZE_STAGE_SUPERSEDED,
 			resize->configure_serial, &resize->requested);

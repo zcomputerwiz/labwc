@@ -50,6 +50,7 @@ void wex_scene_view_moved(struct view *view);
 struct view *wex_scene_group_root(struct view *view);
 struct view *wex_scene_native(struct wex_scene *scene);
 bool wex_scene_matches(struct wex_scene *scene, const struct wlr_box *client);
+bool wex_scene_reconfigure(struct wex_window *frame, uint32_t serial, const struct wlr_box *client);
 void wex_window_drop_scene(struct wex_window *frame);
 void wex_scene_view_minimized(struct view *view, bool minimized);
 bool wex_scene_server_decorated(struct wex_scene *scene);
