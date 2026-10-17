@@ -23,6 +23,7 @@ struct lab_zone {
 	struct wl_list link;       /* lab_zone_manager.zones */
 	struct lab_zone_manager *manager;
 	struct output *output;
+	bool desktop_wide;         /* private shell space, anchored at output */
 	char *handle;
 	struct wl_list resources;  /* struct lab_zone_resource.link */
 	struct wl_listener output_destroy;
@@ -50,7 +51,7 @@ struct lab_zone_item {
 
 void lab_zone_manager_init(struct server *server);
 void lab_zone_manager_finish(struct server *server);
-struct lab_zone *lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output);
+struct lab_zone *lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output, bool desktop_wide);
 void lab_zone_update_output(struct lab_zone *zone);
 void lab_zone_item_notify_moved(struct lab_zone_item *item);
 void lab_zone_item_on_view_destroy(struct lab_zone_item *item);

@@ -9,6 +9,7 @@
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 #include "protocols/xx-zones.h"
+#include "protocols/wex-window.h"
 #include "xx-zones-v1-protocol.h"
 #include "labwc.h"
 #include "view.h"
@@ -50,14 +51,15 @@ generate_zone_token(void)
 }
 
 struct lab_zone *
-lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output)
+lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output,
+		bool desktop_wide)
 {
 	assert(manager);
 	assert(output);
 
 	struct lab_zone *zone;
 	wl_list_for_each(zone, &manager->zones, link) {
-		if (zone->output == output) {
+		if (zone->output == output && zone->desktop_wide == desktop_wide) {
 			return zone;
 		}
 	}
@@ -65,6 +67,7 @@ lab_zone_get_or_create(struct lab_zone_manager *manager, struct output *output)
 	zone = znew(*zone);
 	zone->manager = manager;
 	zone->output = output;
+	zone->desktop_wide = desktop_wide;
 	zone->handle = generate_zone_token();
 	wl_list_init(&zone->resources);
 	wl_list_insert(manager->zones.prev, &zone->link);
@@ -95,7 +98,7 @@ send_zone_initial_events(struct lab_zone *zone, struct wl_resource *resource)
 {
 	struct output *output = zone->output;
 	struct wlr_box box = { 0 };
-	if (output && output->wlr_output) {
+	if (!zone->desktop_wide && output && output->wlr_output) {
 		wlr_output_effective_resolution(output->wlr_output, &box.width, &box.height);
 	}
 	xx_zone_v1_send_size(resource, box.width, box.height);
@@ -135,7 +138,11 @@ handle_zone_manager_get_zone(struct wl_client *client,
 		return;
 	}
 
-	struct lab_zone *zone = lab_zone_get_or_create(manager, output);
+	/* Wine's shared desktop coordinates span outputs. The standard protocol's
+	 * infinite zone keeps the preferred output as its stable origin; public
+	 * native clients retain the existing per-output policy. */
+	struct lab_zone *zone = lab_zone_get_or_create(manager, output,
+		wex_client_is_privileged(client, manager->server));
 	struct lab_zone_resource *zr = znew(*zr);
 	zr->zone = zone;
 	zr->resource = wl_resource_create(client,
@@ -343,8 +350,13 @@ handle_zone_item_set_position(struct wl_client *client,
 		h = 100;
 	}
 
-	/* position_failed only if the window would be entirely outside the zone */
-	if (x + w <= 0 || x >= out_box.width || y + h <= 0 || y >= out_box.height) {
+	struct wlr_box target = {out_box.x + x, out_box.y + y, w, h};
+	/* Infinite private zones still reject placement off the entire desktop. */
+	bool visible = item->zone->desktop_wide
+		? wlr_output_layout_intersects(item->manager->server->output_layout,
+			NULL, &target)
+		: x + w > 0 && x < out_box.width && y + h > 0 && y < out_box.height;
+	if (!visible) {
 		xx_zone_item_v1_send_position_failed(resource);
 		return;
 	}
@@ -418,7 +430,9 @@ lab_zone_update_output(struct lab_zone *zone)
 		return;
 	}
 	struct wlr_box box = { 0 };
-	wlr_output_effective_resolution(zone->output->wlr_output, &box.width, &box.height);
+	if (!zone->desktop_wide) {
+		wlr_output_effective_resolution(zone->output->wlr_output, &box.width, &box.height);
+	}
 
 	struct lab_zone_resource *zr;
 	wl_list_for_each(zr, &zone->resources, link) {
