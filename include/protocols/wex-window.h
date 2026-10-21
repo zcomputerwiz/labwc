@@ -18,6 +18,7 @@ struct wex_window_manager {
 	struct server *server;
 	struct wl_list windows;    /* struct wex_window.link */
 	struct wl_list foreign_windows; /* supplemental observers */
+	struct wl_list render_surfaces; /* producer-owned cross-process render roles */
 	struct wl_listener display_destroy;
 	struct wex_window *pointer_capture;
 };

@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/util/log.h>
 #include "protocols/wex-window.h"
@@ -23,6 +24,8 @@
 
 static const struct wex_window_manager_v1_interface wex_manager_impl;
 static const struct wex_window_v1_interface wex_window_impl;
+static void handle_manager_get_render_surface(struct wl_client *, struct wl_resource *, uint32_t, struct wl_resource *);
+static void drop_render_children(struct wex_window *);
 
 static bool
 generate_window_handle(char handle[33])
@@ -357,6 +360,7 @@ static const struct wex_window_manager_v1_interface wex_manager_impl = {
 	.destroy = handle_manager_destroy,
 	.get_window = handle_manager_get_window,
 	.get_foreign = handle_manager_get_foreign,
+	.get_render_surface = handle_manager_get_render_surface,
 };
 
 static void
@@ -516,6 +520,159 @@ find_window_handle(struct wex_window_manager *manager, const char *handle)
         if (win->view && !strcmp(win->handle, handle)) return win;
     }
     return NULL;
+}
+
+struct wex_render_surface {
+	struct wl_list link;
+	struct wex_window_manager *manager;
+	struct wl_resource *resource;
+	struct wlr_surface *surface;
+	struct wex_window *parent;
+	struct wlr_scene_tree *tree;
+	struct wl_listener surface_destroy, tree_destroy, parent_commit;
+	int x, y, width, height;
+};
+
+static void render_detach(struct wex_render_surface *render)
+{
+	if (render->parent) wl_list_remove(&render->parent_commit.link);
+	render->parent = NULL;
+	if (render->tree) {
+		wl_list_remove(&render->tree_destroy.link);
+		wlr_scene_node_destroy(&render->tree->node);
+		render->tree = NULL;
+	}
+	if (render->surface) wlr_surface_unmap(render->surface);
+}
+
+static void render_tree_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_render_surface *render = wl_container_of(listener, render, tree_destroy);
+	wl_list_remove(&render->tree_destroy.link);
+	render->tree = NULL;
+}
+
+static void render_update_clip(struct wex_render_surface *render)
+{
+	if (!render->parent || !render->tree) return;
+	struct wlr_surface *parent = render->parent->view->surface;
+	int left = render->x < 0 ? -render->x : 0;
+	int top = render->y < 0 ? -render->y : 0;
+	int right = parent->current.width - render->x;
+	int bottom = parent->current.height - render->y;
+	if (right > render->width) right = render->width;
+	if (bottom > render->height) bottom = render->height;
+	struct wlr_box clip = {left, top, right > left ? right - left : 0, bottom > top ? bottom - top : 0};
+	wlr_scene_subsurface_tree_set_clip(&render->tree->node, &clip);
+}
+
+static void render_parent_commit(struct wl_listener *listener, void *data)
+{
+	struct wex_render_surface *render = wl_container_of(listener, render, parent_commit);
+	render_update_clip(render);
+}
+
+static void render_role_commit(struct wlr_surface *surface)
+{
+	struct wex_render_surface *render = surface->role_resource ? wl_resource_get_user_data(surface->role_resource) : NULL;
+	/* Rendering content never owns frame input or keyboard focus. */
+	pixman_region32_clear(&surface->input_region);
+	if (render && render->tree && wlr_surface_has_buffer(surface)) wlr_surface_map(surface);
+	else wlr_surface_unmap(surface);
+}
+
+static const struct wlr_surface_role render_role = {
+	.name = "wex_render_surface_v1",
+	.commit = render_role_commit,
+};
+
+static void render_destroy_resource(struct wl_resource *resource)
+{
+	struct wex_render_surface *render = wl_resource_get_user_data(resource);
+	if (!render) return;
+	render_detach(render);
+	if (render->surface) wl_list_remove(&render->surface_destroy.link);
+	wl_list_remove(&render->link);
+	free(render);
+}
+
+static void render_surface_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_render_surface *render = wl_container_of(listener, render, surface_destroy);
+	wl_list_remove(&render->surface_destroy.link);
+	render->surface = NULL;
+	wl_resource_destroy(render->resource);
+}
+
+static void render_destroy(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void render_set_parent(struct wl_client *client, struct wl_resource *resource,
+		const char *handle, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct wex_render_surface *render = wl_resource_get_user_data(resource);
+	struct wex_window *parent = NULL;
+	if (wex_client_is_privileged(client, render->manager->server) && strlen(handle) == 32 &&
+		width > 0 && width <= 16384 && height > 0 && height <= 16384 &&
+		x >= -65536 && x <= 65536 && y >= -65536 && y <= 65536)
+		parent = find_window_handle(render->manager, handle);
+	if (!parent || !parent->view || !parent->view->surface) {
+		render_detach(render);
+		return;
+	}
+	if (parent != render->parent || !render->tree) {
+		render_detach(render);
+		render->tree = wlr_scene_subsurface_tree_create(parent->view->content_tree, render->surface);
+		if (!render->tree) { wl_resource_post_no_memory(resource); return; }
+		render->tree_destroy.notify = render_tree_destroy;
+		wl_signal_add(&render->tree->node.events.destroy, &render->tree_destroy);
+		render->parent = parent;
+		render->parent_commit.notify = render_parent_commit;
+		wl_signal_add(&parent->view->surface->events.commit, &render->parent_commit);
+	}
+	render->x = x; render->y = y; render->width = width; render->height = height;
+	wlr_scene_node_set_position(&render->tree->node, x, y);
+	render_update_clip(render);
+	render_role_commit(render->surface);
+}
+
+static const struct wex_render_surface_v1_interface render_impl = {
+	.destroy = render_destroy,
+	.set_parent = render_set_parent,
+};
+
+static void handle_manager_get_render_surface(struct wl_client *client, struct wl_resource *resource,
+		uint32_t id, struct wl_resource *surface_resource)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (!wex_client_is_privileged(client, manager->server)) {
+		wl_resource_post_error(resource, 0, "permission denied");
+		return;
+	}
+	struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+	if (!wlr_surface_set_role(surface, &render_role, resource, 0) || surface->role_resource) {
+		if (surface->role_resource) wl_resource_post_error(resource, 0, "render surface already has a role object");
+		return;
+	}
+	struct wex_render_surface *render = calloc(1, sizeof(*render));
+	if (!render) { wl_client_post_no_memory(client); return; }
+	render->resource = wl_resource_create(client, &wex_render_surface_v1_interface, 1, id);
+	if (!render->resource) { free(render); wl_client_post_no_memory(client); return; }
+	render->manager = manager; render->surface = surface;
+	wl_resource_set_implementation(render->resource, &render_impl, render, render_destroy_resource);
+	wlr_surface_set_role_object(surface, render->resource);
+	render->surface_destroy.notify = render_surface_destroy;
+	wl_signal_add(&surface->events.destroy, &render->surface_destroy);
+	wl_list_insert(manager->render_surfaces.prev, &render->link);
+}
+
+static void drop_render_children(struct wex_window *parent)
+{
+	struct wex_render_surface *render;
+	wl_list_for_each(render, &parent->manager->render_surfaces, link)
+		if (render->parent == parent) render_detach(render);
 }
 
 static void
@@ -717,6 +874,7 @@ wex_window_resource_destroy(struct wl_resource *resource)
 {
 	struct wex_window *win = wl_resource_get_user_data(resource);
 	if (win) {
+		drop_render_children(win);
 		release_foreign_association(win, false);
 		if (win->view) {
 			win->view->wex_window = NULL;
@@ -732,6 +890,7 @@ wex_window_on_view_destroy(struct wex_window *win)
 	if (!win) {
 		return;
 	}
+	drop_render_children(win);
 	release_foreign_association(win, false);
 	win->view = NULL;
 }
@@ -781,9 +940,10 @@ wex_window_manager_init(struct server *server)
 	manager->server = server;
 	wl_list_init(&manager->windows);
 	wl_list_init(&manager->foreign_windows);
+	wl_list_init(&manager->render_surfaces);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 10, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 11, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
@@ -805,6 +965,9 @@ wex_window_manager_finish(struct server *server)
 	}
 
 	struct wex_window *win, *win_tmp;
+	struct wex_render_surface *render, *render_tmp;
+	wl_list_for_each_safe(render, render_tmp, &manager->render_surfaces, link)
+		wl_resource_destroy(render->resource);
 	struct wex_foreign_window *foreign, *foreign_tmp;
 	wl_list_for_each_safe(foreign, foreign_tmp, &manager->foreign_windows, link) {
 		wl_resource_destroy(foreign->resource);
