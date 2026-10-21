@@ -563,6 +563,8 @@ static void render_update_clip(struct wex_render_surface *render)
 	if (right > render->width) right = render->width;
 	if (bottom > render->height) bottom = render->height;
 	struct wlr_box clip = {left, top, right > left ? right - left : 0, bottom > top ? bottom - top : 0};
+	/* wlroots treats an empty clip as "no clip", not "draw nothing". */
+	wlr_scene_node_set_enabled(&render->tree->node, clip.width > 0 && clip.height > 0);
 	wlr_scene_subsurface_tree_set_clip(&render->tree->node, &clip);
 }
 
