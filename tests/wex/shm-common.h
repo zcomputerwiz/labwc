@@ -26,6 +26,7 @@ struct wex_context {
 
 	struct xx_zone_manager_v1 *zone_manager;
 	struct wex_window_manager_v1 *wex_window_manager;
+	uint32_t wex_window_manager_version;
 	struct wp_alpha_modifier_v1 *alpha_modifier;
 	struct wp_pointer_warp_v1 *pointer_warp;
 	struct zwlr_virtual_pointer_manager_v1 *virtual_pointer_manager;

@@ -12,6 +12,8 @@ struct view;
 struct wex_foreign_window;
 struct wex_scene;
 struct wlr_box;
+struct wlr_scene_tree;
+struct wex_corner_piece;
 
 struct wex_window_manager {
 	struct wl_global *global;
@@ -37,7 +39,14 @@ struct wex_window {
 	uint32_t focus_epoch;
 	uint32_t capture_epoch;
 	uint32_t resize_serial;
+	uint32_t corner_radius;
+	struct wlr_scene_tree *corner_tree;
+	struct wl_listener surface_commit;
+	struct wex_corner_piece *corner_pieces;
+	size_t num_corner_pieces;
 };
+
+void wex_window_apply_corner_radius(struct wex_window *win);
 
 void wex_window_manager_init(struct server *server);
 void wex_window_manager_finish(struct server *server);

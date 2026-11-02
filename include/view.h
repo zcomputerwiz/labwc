@@ -288,6 +288,7 @@ struct view {
 	uint32_t wex_layer;
 	uint32_t wex_exclusive_edge;
 	uint32_t wex_exclusive_size;
+	uint32_t wex_corner_radius;
 
 	struct {
 		struct wl_signal new_app_id;

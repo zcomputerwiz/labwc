@@ -8,12 +8,15 @@
 #include <sys/un.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/util/transform.h>
 #include <wlr/util/log.h>
 #include "protocols/wex-window.h"
 #include "protocols/xx-zones.h"
 #include "wex-window-v1-protocol.h"
 #include "labwc.h"
+#include "node.h"
 #if HAVE_XWAYLAND
 #include <wlr/xwayland.h>
 #endif
@@ -26,6 +29,8 @@ static const struct wex_window_manager_v1_interface wex_manager_impl;
 static const struct wex_window_v1_interface wex_window_impl;
 static void handle_manager_get_render_surface(struct wl_client *, struct wl_resource *, uint32_t, struct wl_resource *);
 static void drop_render_children(struct wex_window *);
+static void handle_window_surface_commit(struct wl_listener *, void *);
+static void drop_corner_pieces(struct wex_window *);
 
 static bool
 generate_window_handle(char handle[33])
@@ -353,6 +358,11 @@ handle_manager_get_window(struct wl_client *client,
 		&wex_window_v1_interface, version, id);
 	wl_resource_set_implementation(win->resource, &wex_window_impl, win, wex_window_resource_destroy);
 	wl_list_insert(manager->windows.prev, &win->link);
+	wl_list_init(&win->surface_commit.link);
+	if (view->surface) {
+		win->surface_commit.notify = handle_window_surface_commit;
+		wl_signal_add(&view->surface->events.commit, &win->surface_commit);
+	}
     if (version >= 2) wex_window_v1_send_handle(win->resource, win->handle);
 }
 
@@ -849,6 +859,337 @@ handle_wex_window_cancel_foreign_resize(struct wl_client *client, struct wl_reso
 	wex_scene_cancel_resize(wl_resource_get_user_data(resource), serial);
 }
 
+struct wex_corner_piece {
+	struct wlr_scene_surface *scene_surface;
+	struct wlr_scene_buffer *buffer;
+	struct wlr_box box;
+	struct wl_listener destroy;
+	struct wex_window *win;
+};
+
+static struct wlr_scene_buffer *
+find_surface_buffer(struct wlr_scene_node *node, struct wlr_surface *surface)
+{
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
+		struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+		return scene_surface && scene_surface->surface == surface ? buffer : NULL;
+	}
+	if (node->type != WLR_SCENE_NODE_TREE) {
+		return NULL;
+	}
+	struct wlr_scene_node *child;
+	wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link) {
+		struct wlr_scene_buffer *found = find_surface_buffer(child, surface);
+		if (found) {
+			return found;
+		}
+	}
+	return NULL;
+}
+
+static inline int
+compute_corner_inset(int r, int y)
+{
+	int k = r - y;
+	int m = 4 * (r * r - k * (k - 1)) - 1;
+	int s = 0;
+	while ((s + 1) * (s + 1) <= m) s++;
+	int inset = r - (s + 1) / 2;
+	return inset > 0 ? inset : 0;
+}
+
+static bool
+corner_piece_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
+{
+	struct node_descriptor *desc = buffer->node.data;
+	struct view *view = desc ? desc->data : NULL;
+	struct wex_window *win = view ? view->wex_window : NULL;
+	if (!win || !view || !view->surface) {
+		return false;
+	}
+	for (size_t i = 0; i < win->num_corner_pieces; ++i) {
+		if (win->corner_pieces[i].buffer == buffer) {
+			*sx += win->corner_pieces[i].box.x;
+			*sy += win->corner_pieces[i].box.y;
+			return wlr_surface_point_accepts_input(view->surface, *sx, *sy);
+		}
+	}
+	return false;
+}
+
+static void
+corner_piece_destroyed(struct wl_listener *listener, void *data)
+{
+	struct wex_corner_piece *piece = wl_container_of(listener, piece, destroy);
+	wl_list_remove(&piece->destroy.link);
+	piece->buffer = NULL;
+	piece->scene_surface = NULL;
+}
+
+static void
+crop_corner_piece(struct wlr_scene_buffer *buffer, struct wlr_surface *surface, struct wlr_box box)
+{
+	if (!buffer) {
+		return;
+	}
+	wlr_scene_node_set_enabled(&buffer->node, box.width > 0 && box.height > 0);
+	if (box.width <= 0 || box.height <= 0) {
+		return;
+	}
+	struct wlr_fbox source;
+	wlr_surface_get_buffer_source_box(surface, &source);
+	int width = surface->current.buffer_width;
+	int height = surface->current.buffer_height;
+	wlr_fbox_transform(&source, &source, surface->current.transform, width, height);
+	wlr_output_transform_coords(surface->current.transform, &width, &height);
+	double source_width = source.width, source_height = source.height;
+	source.x += (double)box.x * source_width / surface->current.width;
+	source.y += (double)box.y * source_height / surface->current.height;
+	source.width = (double)box.width * source_width / surface->current.width;
+	source.height = (double)box.height * source_height / surface->current.height;
+	wlr_fbox_transform(&source, &source, wlr_output_transform_invert(surface->current.transform), width, height);
+	wlr_scene_buffer_set_source_box(buffer, &source);
+	wlr_scene_buffer_set_dest_size(buffer, box.width, box.height);
+	wlr_scene_node_set_position(&buffer->node, box.x, box.y);
+
+	pixman_region32_t opaque;
+	pixman_region32_init(&opaque);
+	pixman_region32_copy(&opaque, &surface->opaque_region);
+	pixman_region32_translate(&opaque, -box.x, -box.y);
+	pixman_region32_intersect_rect(&opaque, &opaque, 0, 0, box.width, box.height);
+	wlr_scene_buffer_set_opaque_region(buffer, &opaque);
+	pixman_region32_fini(&opaque);
+}
+
+static void
+drop_corner_pieces(struct wex_window *win)
+{
+	if (win->corner_pieces) {
+		for (size_t i = 0; i < win->num_corner_pieces; ++i) {
+			if (win->corner_pieces[i].buffer) {
+				wl_list_remove(&win->corner_pieces[i].destroy.link);
+			}
+		}
+		free(win->corner_pieces);
+		win->corner_pieces = NULL;
+	}
+	win->num_corner_pieces = 0;
+	if (win->corner_tree) {
+		wlr_scene_node_destroy(&win->corner_tree->node);
+		win->corner_tree = NULL;
+	}
+}
+
+void
+wex_window_apply_corner_radius(struct wex_window *win)
+{
+	if (!win->view || !win->view->surface) {
+		drop_corner_pieces(win);
+		return;
+	}
+
+	struct wlr_surface *surface = win->view->surface;
+	struct wlr_scene_buffer *root = find_surface_buffer(&win->view->content_tree->node, surface);
+
+	if (win->corner_radius == 0 || win->scene) {
+		drop_corner_pieces(win);
+		if (root) {
+			wlr_scene_node_set_enabled(&root->node, true);
+		}
+		if (win->view->output) {
+			wlr_output_schedule_frame(win->view->output->wlr_output);
+		}
+		return;
+	}
+
+	if (!surface->buffer || surface->current.width <= 0 || surface->current.height <= 0) {
+		return;
+	}
+
+	if (!root) {
+		return;
+	}
+
+	wlr_scene_node_set_enabled(&root->node, false);
+
+	int width = surface->current.width;
+	int height = surface->current.height;
+	int r = (int)win->corner_radius;
+	if (r > 32) r = 32;
+	if (r * 2 > width) r = width / 2;
+	if (r * 2 > height) r = height / 2;
+
+	struct wlr_box slices[65];
+	size_t count = 0;
+
+	/* Top slices: y = 0 .. r - 1 */
+	int cur_inset = -1;
+	int cur_start_y = 0;
+	int cur_height = 0;
+	for (int y = 0; y < r; y++) {
+		int inset = compute_corner_inset(r, y);
+		if (cur_inset == -1) {
+			cur_inset = inset;
+			cur_start_y = y;
+			cur_height = 1;
+		} else if (inset == cur_inset) {
+			cur_height++;
+		} else {
+			if (width > 2 * cur_inset) {
+				slices[count++] = (struct wlr_box){
+					.x = cur_inset,
+					.y = cur_start_y,
+					.width = width - 2 * cur_inset,
+					.height = cur_height,
+				};
+			}
+			cur_inset = inset;
+			cur_start_y = y;
+			cur_height = 1;
+		}
+	}
+	if (cur_height > 0 && width > 2 * cur_inset) {
+		slices[count++] = (struct wlr_box){
+			.x = cur_inset,
+			.y = cur_start_y,
+			.width = width - 2 * cur_inset,
+			.height = cur_height,
+		};
+	}
+
+	/* Middle slice */
+	if (height > 2 * r) {
+		slices[count++] = (struct wlr_box){
+			.x = 0,
+			.y = r,
+			.width = width,
+			.height = height - 2 * r,
+		};
+	}
+
+	/* Bottom slices: y = height - r .. height - 1 */
+	cur_inset = -1;
+	cur_start_y = 0;
+	cur_height = 0;
+	for (int y = height - r; y < height; y++) {
+		int y_from_bottom = height - 1 - y;
+		int inset = compute_corner_inset(r, y_from_bottom);
+		if (cur_inset == -1) {
+			cur_inset = inset;
+			cur_start_y = y;
+			cur_height = 1;
+		} else if (inset == cur_inset) {
+			cur_height++;
+		} else {
+			if (width > 2 * cur_inset) {
+				slices[count++] = (struct wlr_box){
+					.x = cur_inset,
+					.y = cur_start_y,
+					.width = width - 2 * cur_inset,
+					.height = cur_height,
+				};
+			}
+			cur_inset = inset;
+			cur_start_y = y;
+			cur_height = 1;
+		}
+	}
+	if (cur_height > 0 && width > 2 * cur_inset) {
+		slices[count++] = (struct wlr_box){
+			.x = cur_inset,
+			.y = cur_start_y,
+			.width = width - 2 * cur_inset,
+			.height = cur_height,
+		};
+	}
+
+	if (!win->corner_tree || win->num_corner_pieces != count) {
+		drop_corner_pieces(win);
+		win->corner_tree = wlr_scene_tree_create(win->view->scene_tree);
+		if (!win->corner_tree) {
+			return;
+		}
+		wlr_scene_node_place_below(&win->corner_tree->node, &win->view->content_tree->node);
+		struct wlr_box geometry = {0};
+		struct wlr_xdg_surface *xdg = xdg_surface_from_view(win->view);
+		if (xdg) {
+			wlr_xdg_surface_get_geometry(xdg, &geometry);
+		}
+		wlr_scene_node_set_position(&win->corner_tree->node, -geometry.x, -geometry.y);
+
+		win->corner_pieces = calloc(count, sizeof(*win->corner_pieces));
+		if (!win->corner_pieces) {
+			return;
+		}
+		win->num_corner_pieces = count;
+		for (size_t i = 0; i < count; i++) {
+			struct wlr_scene_surface *scene_surface = wlr_scene_surface_create(win->corner_tree, surface);
+			if (!scene_surface) {
+				return;
+			}
+			win->corner_pieces[i].scene_surface = scene_surface;
+			win->corner_pieces[i].buffer = scene_surface->buffer;
+			win->corner_pieces[i].win = win;
+			win->corner_pieces[i].destroy.notify = corner_piece_destroyed;
+			wl_signal_add(&scene_surface->buffer->node.events.destroy, &win->corner_pieces[i].destroy);
+			node_descriptor_create(&scene_surface->buffer->node, LAB_NODE_DESC_VIEW, win->view);
+			scene_surface->buffer->point_accepts_input = corner_piece_accepts_input;
+		}
+		/* each scene surface resets its crop on commit: our listener must run after theirs */
+		wl_list_remove(&win->surface_commit.link);
+		win->surface_commit.notify = handle_window_surface_commit;
+		wl_signal_add(&surface->events.commit, &win->surface_commit);
+	}
+
+	for (size_t i = 0; i < count; i++) {
+		win->corner_pieces[i].box = slices[i];
+		crop_corner_piece(win->corner_pieces[i].buffer, surface, slices[i]);
+	}
+
+	if (win->view->output) {
+		wlr_output_schedule_frame(win->view->output->wlr_output);
+	}
+}
+
+static void
+handle_window_surface_commit(struct wl_listener *listener, void *data)
+{
+	struct wex_window *win = wl_container_of(listener, win, surface_commit);
+	if (win->corner_radius > 0) {
+		wex_window_apply_corner_radius(win);
+	}
+}
+
+static void
+handle_wex_window_set_corner_radius(struct wl_client *client,
+		struct wl_resource *resource, uint32_t radius)
+{
+	struct wex_window *win = wl_resource_get_user_data(resource);
+	if (!win) {
+		return;
+	}
+	if (!wex_client_is_privileged(client, win->manager->server)) {
+		wl_resource_post_error(resource, 0, "permission denied");
+		return;
+	}
+	if (!win->view || !win->view->surface || wl_resource_get_client(win->view->surface->resource) != client) {
+		wl_resource_post_error(resource, 0, "permission denied: not surface owner");
+		return;
+	}
+	if (radius > 32) {
+		radius = 32;
+	}
+	if (win->corner_radius == radius) {
+		return;
+	}
+	win->corner_radius = radius;
+	if (win->view) {
+		win->view->wex_corner_radius = radius;
+	}
+	wex_window_apply_corner_radius(win);
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -869,6 +1210,7 @@ static const struct wex_window_v1_interface wex_window_impl = {
 	.resize_foreign = handle_wex_window_resize_foreign,
 	.commit_foreign_resize = handle_wex_window_commit_foreign_resize,
 	.cancel_foreign_resize = handle_wex_window_cancel_foreign_resize,
+	.set_corner_radius = handle_wex_window_set_corner_radius,
 };
 
 static void
@@ -876,6 +1218,13 @@ wex_window_resource_destroy(struct wl_resource *resource)
 {
 	struct wex_window *win = wl_resource_get_user_data(resource);
 	if (win) {
+		if (win->surface_commit.link.prev) {
+			wl_list_remove(&win->surface_commit.link);
+			wl_list_init(&win->surface_commit.link);
+		}
+		win->corner_radius = 0;
+		wex_window_apply_corner_radius(win);
+		drop_corner_pieces(win);
 		drop_render_children(win);
 		release_foreign_association(win, false);
 		if (win->view) {
@@ -892,6 +1241,11 @@ wex_window_on_view_destroy(struct wex_window *win)
 	if (!win) {
 		return;
 	}
+	if (win->surface_commit.link.prev) {
+		wl_list_remove(&win->surface_commit.link);
+		wl_list_init(&win->surface_commit.link);
+	}
+	drop_corner_pieces(win);
 	drop_render_children(win);
 	release_foreign_association(win, false);
 	win->view = NULL;
@@ -945,7 +1299,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->render_surfaces);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 11, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 12, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);

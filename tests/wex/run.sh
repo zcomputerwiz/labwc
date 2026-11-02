@@ -315,6 +315,71 @@ run_check "Policy 5: Window switcher (A-Tab) does not select wex window" \
 run_check "Policy 7: Non-wex client retains stock click-to-focus and Super+A maximize" \
     "$SCRIPT_DIR/policy-client" --socket wex-shell-0 --test 7 --wait 0
 
+# TEST 16: wex-window-v1 corner radius version negotiation
+run_check "Corner Radius: Version negotiation (advertised v12, old peer v11 compatibility)" \
+    "$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario version-negotiation
+
+# TEST 17: wex-window-v1 corner radius denial on unprivileged socket
+run_check "Corner Radius: Denial on unprivileged socket" \
+    "$SCRIPT_DIR/corner-client" --normal-socket wayland-0 --scenario denial
+
+# TEST 18: wex-window-v1 corner radius surface destruction
+run_check "Corner Radius: Surface destruction while radius is active" \
+    "$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario surface-destroy
+
+# TEST 19: wex-window-v1 visual corner rendering, clear and clamping
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex-window-v1 corner clipping, clearing and clamping..."
+"$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario render --barrier-dir "$BARRIER_DIR" &
+CLIENT_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_radius_16" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/11_corner_radius_16.png"
+touch "$BARRIER_DIR/b_radius_16_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_radius_0" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/12_corner_radius_0.png"
+touch "$BARRIER_DIR/b_radius_0_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_radius_clamp" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/13_corner_radius_clamp.png"
+touch "$BARRIER_DIR/b_radius_clamp_cont"
+
+wait "$CLIENT_PID"
+
+run_check "Corner Radius 16: Top-left corner (200, 200) is clipped to background Navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 200 200 112233
+
+run_check "Corner Radius 16: Interior pixel (300, 300) is Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 300 300 FF0000
+
+# all four corners are clipped and the 200x200 window keeps its size (no stretched slices)
+run_check "Corner Radius 16: Top-right corner (399, 200) is clipped" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 399 200 112233
+run_check "Corner Radius 16: Bottom-left corner (200, 399) is clipped" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 200 399 112233
+run_check "Corner Radius 16: Bottom-right corner (399, 399) is clipped" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 399 399 112233
+run_check "Corner Radius 16: Right edge middle (399, 300) is Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 399 300 FF0000
+run_check "Corner Radius 16: Nothing below the window (300, 420)" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/11_corner_radius_16.png" 300 420 112233
+
+run_check "Corner Radius Cleared: Top-left corner (200, 200) is restored to sharp Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/12_corner_radius_0.png" 200 200 FF0000
+
+run_check "Corner Radius Cleared: Interior pixel (300, 300) remains Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/12_corner_radius_0.png" 300 300 FF0000
+
+run_check "Corner Radius Clamped: Top-left corner (200, 200) is clipped to background Navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/13_corner_radius_clamp.png" 200 200 112233
+
+run_check "Corner Radius Clamped: Point (240, 240) outside 32px corner is Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/13_corner_radius_clamp.png" 240 240 FF0000
+
+run_check "Corner Radius Clamped: Interior pixel (300, 300) remains Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/13_corner_radius_clamp.png" 300 300 FF0000
+
 echo "=========================================================="
 echo " ALL TESTS PASSED SUCCESSFULLY ($TESTS_PASSED/$TESTS_PASSED)"
 echo " Screenshots saved in: $OUT_DIR"

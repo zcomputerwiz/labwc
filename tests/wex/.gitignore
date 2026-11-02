@@ -4,6 +4,8 @@ alpha-client
 warp-client
 policy-client
 foreign-client
+handle-client
+corner-client
 *.o
 *-protocol.c
 *-protocol.h

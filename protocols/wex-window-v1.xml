@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="11">
+  <interface name="wex_window_manager_v1" version="12">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -92,7 +92,7 @@
     </request>
   </interface>
 
-  <interface name="wex_window_v1" version="11">
+  <interface name="wex_window_v1" version="12">
     <description summary="window controls interface">
       Provides operations for stacking, layering, shell edge reservation,
       and direct activation.
@@ -370,6 +370,16 @@
       <arg name="x" type="int"/><arg name="y" type="int"/>
       <arg name="width" type="int"/><arg name="height" type="int"/>
     </event>
+    <request name="set_corner_radius" since="12">
+      <description summary="set per-surface corner radius for window clipping">
+        Sets the corner radius in pixels used to clip the window's corners
+        when compositing. A radius of 0 disables clipping (sharp corners).
+        The compositor clamps the radius to the range 0..32.
+        Only the client that owns the surface may set its corner radius;
+        requests from unprivileged clients or non-owners are rejected.
+      </description>
+      <arg name="radius" type="uint" summary="corner radius in pixels (0..32)"/>
+    </request>
   </interface>
   <interface name="wex_foreign_window_v1" version="10">
     <description summary="supplemental native window observation">

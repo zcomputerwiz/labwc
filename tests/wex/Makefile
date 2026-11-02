@@ -33,7 +33,7 @@ PROTO_GEN_H = \
 PROTO_OBJS = $(PROTO_GEN_C:.c=.o)
 COMMON_OBJS = shm-common.o $(PROTO_OBJS)
 
-TARGETS = zones-client stack-client alpha-client warp-client policy-client handle-client foreign-client
+TARGETS = zones-client stack-client alpha-client warp-client policy-client handle-client foreign-client corner-client
 
 all: $(TARGETS)
 
@@ -118,6 +118,9 @@ warp-client: warp-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 policy-client: policy-client.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+
+corner-client: corner-client.o $(COMMON_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 clean:
