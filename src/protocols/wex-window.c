@@ -34,6 +34,8 @@ static void drop_corner_pieces(struct wex_window *);
 static void drop_effects(struct wex_window *);
 static void handle_manager_set_effects(struct wl_client *, struct wl_resource *,
 	const char *, uint32_t, uint32_t, uint32_t, uint32_t, int32_t, int32_t, int32_t, int32_t);
+static void handle_manager_set_thumbnails(struct wl_client *, struct wl_resource *, struct wl_array *);
+static void handle_manager_set_peek(struct wl_client *, struct wl_resource *, const char *, struct wl_array *);
 
 static bool
 generate_window_handle(char handle[33])
@@ -375,6 +377,8 @@ static const struct wex_window_manager_v1_interface wex_manager_impl = {
 	.get_foreign = handle_manager_get_foreign,
 	.get_render_surface = handle_manager_get_render_surface,
 	.set_effects = handle_manager_set_effects,
+	.set_thumbnails = handle_manager_set_thumbnails,
+	.set_peek = handle_manager_set_peek,
 };
 
 static void
@@ -1418,6 +1422,471 @@ handle_manager_set_effects(struct wl_client *client,
 	wex_window_update_effects(win);
 }
 
+struct wex_manager_bound {
+	struct wl_list link; /* manager->manager_resources */
+	struct wl_resource *resource;
+	struct wex_window_manager *manager;
+	struct wl_listener destroy;
+};
+
+struct wex_thumbnail_record {
+	char dest[32];
+	char src[32];
+	uint32_t flags;
+	uint32_t opacity;
+	int32_t dest_rect[4];
+	int32_t source_rect[4];
+};
+
+struct wex_thumbnail_entry {
+	struct wl_list link; /* manager->thumbnails */
+	struct wex_window_manager *manager;
+	struct wex_window *dest_win;
+	struct wex_window *src_win;
+	struct wlr_scene_surface *scene_surface;
+	struct wl_listener node_destroy;
+	struct wl_listener dest_commit;
+	struct wl_listener src_commit;
+
+	uint32_t flags;
+	uint32_t opacity;
+	int32_t dest_rect[4];
+	int32_t src_rect[4];
+};
+
+static bool
+thumbnail_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
+{
+	(void)buffer;
+	(void)sx;
+	(void)sy;
+	return false;
+}
+
+static void
+apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
+{
+	if (!entry || !entry->scene_surface || !entry->dest_win || !entry->dest_win->view ||
+	    !entry->dest_win->view->surface || !entry->src_win || !entry->src_win->view ||
+	    !entry->src_win->view->surface) {
+		return;
+	}
+
+	struct wlr_surface *dest_surf = entry->dest_win->view->surface;
+	struct wlr_surface *src_surf = entry->src_win->view->surface;
+
+	if (!wlr_surface_has_buffer(src_surf) || src_surf->current.width <= 0 || src_surf->current.height <= 0) {
+		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		return;
+	}
+
+	int dw_total = dest_surf->current.width;
+	int dh_total = dest_surf->current.height;
+
+	int dest_w = entry->dest_rect[2] - entry->dest_rect[0];
+	int dest_h = entry->dest_rect[3] - entry->dest_rect[1];
+	if (dest_w <= 0 || dest_h <= 0) {
+		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		return;
+	}
+
+	int src_x = 0, src_y = 0;
+	int src_w = src_surf->current.width;
+	int src_h = src_surf->current.height;
+
+	if (entry->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_HAS_SOURCE) {
+		src_x = entry->src_rect[0];
+		src_y = entry->src_rect[1];
+		src_w = entry->src_rect[2] - entry->src_rect[0];
+		src_h = entry->src_rect[3] - entry->src_rect[1];
+	}
+	if (src_w <= 0 || src_h <= 0) {
+		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		return;
+	}
+
+	int cl_dest_left = entry->dest_rect[0] < 0 ? 0 : entry->dest_rect[0];
+	int cl_dest_top = entry->dest_rect[1] < 0 ? 0 : entry->dest_rect[1];
+	int cl_dest_right = entry->dest_rect[2] > dw_total ? dw_total : entry->dest_rect[2];
+	int cl_dest_bottom = entry->dest_rect[3] > dh_total ? dh_total : entry->dest_rect[3];
+	int cl_dest_w = cl_dest_right - cl_dest_left;
+	int cl_dest_h = cl_dest_bottom - cl_dest_top;
+	if (cl_dest_w <= 0 || cl_dest_h <= 0) {
+		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		return;
+	}
+
+	double scale_x = (double)src_w / (double)dest_w;
+	double scale_y = (double)src_h / (double)dest_h;
+	double sbox_x = src_x + (cl_dest_left - entry->dest_rect[0]) * scale_x;
+	double sbox_y = src_y + (cl_dest_top - entry->dest_rect[1]) * scale_y;
+	double sbox_w = cl_dest_w * scale_x;
+	double sbox_h = cl_dest_h * scale_y;
+
+	struct wlr_fbox source;
+	wlr_surface_get_buffer_source_box(src_surf, &source);
+	int bwidth = src_surf->current.buffer_width;
+	int bheight = src_surf->current.buffer_height;
+	wlr_fbox_transform(&source, &source, src_surf->current.transform, bwidth, bheight);
+	wlr_output_transform_coords(src_surf->current.transform, &bwidth, &bheight);
+	double sw = source.width, sh = source.height;
+	source.x += sbox_x * sw / src_surf->current.width;
+	source.y += sbox_y * sh / src_surf->current.height;
+	source.width = sbox_w * sw / src_surf->current.width;
+	source.height = sbox_h * sh / src_surf->current.height;
+	wlr_fbox_transform(&source, &source, wlr_output_transform_invert(src_surf->current.transform), bwidth, bheight);
+
+	wlr_scene_buffer_set_source_box(entry->scene_surface->buffer, &source);
+	wlr_scene_buffer_set_dest_size(entry->scene_surface->buffer, cl_dest_w, cl_dest_h);
+	wlr_scene_node_set_position(&entry->scene_surface->buffer->node, cl_dest_left, cl_dest_top);
+
+	uint32_t op = entry->opacity > 255 ? 255 : entry->opacity;
+	wlr_scene_buffer_set_opacity(entry->scene_surface->buffer, (float)op / 255.0f);
+	entry->scene_surface->buffer->point_accepts_input = thumbnail_point_accepts_input;
+	wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, true);
+
+	if (entry->dest_win->view->output) {
+		wlr_output_schedule_frame(entry->dest_win->view->output->wlr_output);
+	}
+}
+
+static void
+thumbnail_entry_destroy(struct wex_thumbnail_entry *entry)
+{
+	if (!entry) return;
+	if (entry->dest_commit.link.prev) {
+		wl_list_remove(&entry->dest_commit.link);
+		wl_list_init(&entry->dest_commit.link);
+	}
+	if (entry->src_commit.link.prev) {
+		wl_list_remove(&entry->src_commit.link);
+		wl_list_init(&entry->src_commit.link);
+	}
+	if (entry->node_destroy.link.prev) {
+		wl_list_remove(&entry->node_destroy.link);
+		wl_list_init(&entry->node_destroy.link);
+	}
+	if (entry->scene_surface) {
+		wlr_scene_node_destroy(&entry->scene_surface->buffer->node);
+		entry->scene_surface = NULL;
+	}
+	wl_list_remove(&entry->link);
+	free(entry);
+}
+
+void
+wex_window_drop_thumbnails(struct wex_window *win)
+{
+	if (!win || !win->manager) return;
+	struct wex_thumbnail_entry *entry, *tmp;
+	wl_list_for_each_safe(entry, tmp, &win->manager->thumbnails, link) {
+		if (entry->dest_win == win || entry->src_win == win) {
+			thumbnail_entry_destroy(entry);
+		}
+	}
+	if (win->thumbnail_tree) {
+		wlr_scene_node_destroy(&win->thumbnail_tree->node);
+		win->thumbnail_tree = NULL;
+	}
+}
+
+static void
+manager_clear_all_thumbnails(struct wex_window_manager *manager)
+{
+	struct wex_thumbnail_entry *entry, *tmp;
+	wl_list_for_each_safe(entry, tmp, &manager->thumbnails, link) {
+		thumbnail_entry_destroy(entry);
+	}
+	struct wex_window *win;
+	wl_list_for_each(win, &manager->windows, link) {
+		if (win->thumbnail_tree) {
+			wlr_scene_node_destroy(&win->thumbnail_tree->node);
+			win->thumbnail_tree = NULL;
+		}
+	}
+}
+
+static void
+handle_thumbnail_src_commit(struct wl_listener *listener, void *data)
+{
+	struct wex_thumbnail_entry *entry = wl_container_of(listener, entry, src_commit);
+	apply_thumbnail_geometry(entry);
+}
+
+static void
+handle_thumbnail_dest_commit(struct wl_listener *listener, void *data)
+{
+	struct wex_thumbnail_entry *entry = wl_container_of(listener, entry, dest_commit);
+	if (entry->dest_win && entry->dest_win->thumbnail_tree && entry->dest_win->view) {
+		struct wlr_box geom = {0};
+		struct wlr_xdg_surface *xdg = xdg_surface_from_view(entry->dest_win->view);
+		if (xdg) wlr_xdg_surface_get_geometry(xdg, &geom);
+		wlr_scene_node_set_position(&entry->dest_win->thumbnail_tree->node, -geom.x, -geom.y);
+	}
+	apply_thumbnail_geometry(entry);
+}
+
+static void
+handle_thumbnail_node_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_thumbnail_entry *entry = wl_container_of(listener, entry, node_destroy);
+	entry->scene_surface = NULL;
+	thumbnail_entry_destroy(entry);
+}
+
+static void
+handle_manager_set_thumbnails(struct wl_client *client,
+		struct wl_resource *resource,
+		struct wl_array *records)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (!wex_client_is_privileged(client, manager->server)) {
+		wl_resource_post_error(resource, 0, "permission denied");
+		return;
+	}
+
+	if (!records || records->size == 0) {
+		manager_clear_all_thumbnails(manager);
+		return;
+	}
+
+	if (records->size % sizeof(struct wex_thumbnail_record) != 0) {
+		/* malformed array size => ignore whole request, no crash */
+		return;
+	}
+
+	manager_clear_all_thumbnails(manager);
+
+	size_t count = records->size / sizeof(struct wex_thumbnail_record);
+	if (count > 80) count = 80;
+
+	const struct wex_thumbnail_record *recs = (const struct wex_thumbnail_record *)records->data;
+
+	for (size_t i = 0; i < count; i++) {
+		const struct wex_thumbnail_record *rec = &recs[i];
+		char d_handle[33], s_handle[33];
+		memcpy(d_handle, rec->dest, 32);
+		d_handle[32] = '\0';
+		memcpy(s_handle, rec->src, 32);
+		s_handle[32] = '\0';
+
+		if (strcmp(d_handle, s_handle) == 0) continue;
+
+		struct wex_window *dest_win = find_window_handle(manager, d_handle);
+		struct wex_window *src_win = find_window_handle(manager, s_handle);
+		if (!dest_win || !dest_win->view || !dest_win->view->surface ||
+		    !src_win || !src_win->view || !src_win->view->surface) {
+			continue;
+		}
+
+		int dw = rec->dest_rect[2] - rec->dest_rect[0];
+		int dh = rec->dest_rect[3] - rec->dest_rect[1];
+		if (dw <= 0 || dh <= 0) continue;
+
+		if (!(rec->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE)) continue;
+
+		if (!dest_win->thumbnail_tree) {
+			dest_win->thumbnail_tree = wlr_scene_tree_create(dest_win->view->scene_tree);
+			if (!dest_win->thumbnail_tree) continue;
+			wlr_scene_node_place_above(&dest_win->thumbnail_tree->node, &dest_win->view->content_tree->node);
+			struct wlr_box geom = {0};
+			struct wlr_xdg_surface *xdg = xdg_surface_from_view(dest_win->view);
+			if (xdg) wlr_xdg_surface_get_geometry(xdg, &geom);
+			wlr_scene_node_set_position(&dest_win->thumbnail_tree->node, -geom.x, -geom.y);
+		}
+
+		struct wlr_scene_surface *scene_surface =
+			wlr_scene_surface_create(dest_win->thumbnail_tree, src_win->view->surface);
+		if (!scene_surface) continue;
+
+		struct wex_thumbnail_entry *entry = znew(*entry);
+		entry->manager = manager;
+		entry->dest_win = dest_win;
+		entry->src_win = src_win;
+		entry->scene_surface = scene_surface;
+		entry->flags = rec->flags;
+		entry->opacity = rec->opacity;
+		memcpy(entry->dest_rect, rec->dest_rect, sizeof(entry->dest_rect));
+		memcpy(entry->src_rect, rec->source_rect, sizeof(entry->src_rect));
+
+		entry->node_destroy.notify = handle_thumbnail_node_destroy;
+		wl_signal_add(&scene_surface->buffer->node.events.destroy, &entry->node_destroy);
+
+		wl_list_init(&entry->dest_commit.link);
+		entry->dest_commit.notify = handle_thumbnail_dest_commit;
+		wl_signal_add(&dest_win->view->surface->events.commit, &entry->dest_commit);
+
+		wl_list_init(&entry->src_commit.link);
+		entry->src_commit.notify = handle_thumbnail_src_commit;
+		wl_signal_add(&src_win->view->surface->events.commit, &entry->src_commit);
+
+		wl_list_insert(&manager->thumbnails, &entry->link);
+		apply_thumbnail_geometry(entry);
+	}
+}
+
+static void
+manager_apply_peek_to_view(struct wex_window_manager *manager, struct view *view)
+{
+	if (!view || !view->scene_tree) return;
+	if (!manager->peek_active) {
+		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
+		return;
+	}
+
+	struct wex_window *win = view->wex_window;
+	/* 1. Target window is ALWAYS shown (even if minimized) */
+	if (win && strcmp(win->handle, manager->peek_target) == 0) {
+		wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+		return;
+	}
+
+	/* 2. Shell windows (desktop, taskbars, exclusive edges) stay visible */
+	if (view->wex_exclusive_edge != 0 ||
+	    view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL ||
+	    view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP) {
+		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
+		return;
+	}
+
+	/* 3. Windows in keep list stay visible */
+	if (win) {
+		for (size_t i = 0; i < manager->peek_keep_count; i++) {
+			if (strcmp(win->handle, manager->peek_keep[i]) == 0) {
+				wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
+				return;
+			}
+		}
+	}
+
+	/* 4. Otherwise, hide the view */
+	wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+}
+
+static void
+manager_apply_peek(struct wex_window_manager *manager)
+{
+	struct view *view;
+	wl_list_for_each(view, &manager->server->views, link) {
+		manager_apply_peek_to_view(manager, view);
+	}
+	if (manager->server->active_view && manager->server->active_view->output) {
+		wlr_output_schedule_frame(manager->server->active_view->output->wlr_output);
+	} else if (!wl_list_empty(&manager->server->outputs)) {
+		struct output *out = wl_container_of(manager->server->outputs.next, out, link);
+		if (out && out->wlr_output) {
+			wlr_output_schedule_frame(out->wlr_output);
+		}
+	}
+}
+
+static void
+manager_end_peek(struct wex_window_manager *manager)
+{
+	if (!manager->peek_active) return;
+	manager->peek_active = false;
+	manager->peek_target[0] = '\0';
+	manager->peek_keep_count = 0;
+	manager->peek_resource = NULL;
+	manager->peek_client = NULL;
+	manager_apply_peek(manager);
+}
+
+static void
+handle_manager_set_peek(struct wl_client *client,
+		struct wl_resource *resource,
+		const char *target,
+		struct wl_array *keep)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (!wex_client_is_privileged(client, manager->server)) {
+		wl_resource_post_error(resource, 0, "permission denied");
+		return;
+	}
+
+	if (!target || target[0] == '\0') {
+		manager_end_peek(manager);
+		return;
+	}
+
+	manager->peek_active = true;
+	snprintf(manager->peek_target, sizeof(manager->peek_target), "%s", target);
+	manager->peek_resource = resource;
+	manager->peek_client = client;
+	manager->peek_keep_count = 0;
+
+	if (keep && keep->size > 0) {
+		size_t num = keep->size / 32;
+		if (num > 64) num = 64;
+		const char *ptr = keep->data;
+		for (size_t i = 0; i < num; i++) {
+			memcpy(manager->peek_keep[i], ptr + i * 32, 32);
+			manager->peek_keep[i][32] = '\0';
+		}
+		manager->peek_keep_count = num;
+	}
+
+	manager_apply_peek(manager);
+}
+
+void
+wex_window_manager_on_view_map(struct view *view)
+{
+	if (!view || !view->server || !view->server->wex_window_manager) return;
+	struct wex_window_manager *manager = view->server->wex_window_manager;
+	if (manager->peek_active) {
+		manager_apply_peek_to_view(manager, view);
+	}
+}
+
+static void
+handle_manager_resource_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_manager_bound *bound = wl_container_of(listener, bound, destroy);
+	struct wex_window_manager *manager = bound->manager;
+	if (manager->peek_active && manager->peek_resource == bound->resource) {
+		manager_end_peek(manager);
+	}
+	wl_list_remove(&bound->destroy.link);
+	wl_list_remove(&bound->link);
+	free(bound);
+}
+
+void
+wex_window_manager_on_output_commit(struct wex_window_manager *manager)
+{
+	if (!manager || wl_list_empty(&manager->manager_resources)) {
+		return;
+	}
+
+	bool has_v14 = false;
+	struct wex_manager_bound *bound;
+	wl_list_for_each(bound, &manager->manager_resources, link) {
+		if (wl_resource_get_version(bound->resource) >= 14) {
+			has_v14 = true;
+			break;
+		}
+	}
+	if (!has_v14) {
+		return;
+	}
+
+	struct timespec now = {0};
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	manager->frame_counter++;
+	uint32_t frame_lo = (uint32_t)(manager->frame_counter & 0xFFFFFFFF);
+	uint32_t sec_hi = (uint32_t)(((uint64_t)now.tv_sec >> 32) & 0xFFFFFFFF);
+	uint32_t sec_lo = (uint32_t)((uint64_t)now.tv_sec & 0xFFFFFFFF);
+	uint32_t nsec = (uint32_t)now.tv_nsec;
+
+	wl_list_for_each(bound, &manager->manager_resources, link) {
+		if (wl_resource_get_version(bound->resource) >= 14) {
+			wex_window_manager_v1_send_frame(bound->resource, frame_lo, sec_hi, sec_lo, nsec);
+		}
+	}
+}
+
 static const struct wex_window_v1_interface wex_window_impl = {
 	.destroy = handle_wex_window_destroy,
 	.place_above = handle_wex_window_place_above,
@@ -1456,6 +1925,7 @@ wex_window_resource_destroy(struct wl_resource *resource)
 		drop_corner_pieces(win);
 		drop_effects(win);
 		drop_render_children(win);
+		wex_window_drop_thumbnails(win);
 		release_foreign_association(win, false);
 		if (win->view) {
 			win->view->wex_window = NULL;
@@ -1478,6 +1948,7 @@ wex_window_on_view_destroy(struct wex_window *win)
 	drop_corner_pieces(win);
 	drop_effects(win);
 	drop_render_children(win);
+	wex_window_drop_thumbnails(win);
 	release_foreign_association(win, false);
 	win->view = NULL;
 }
@@ -1500,6 +1971,14 @@ handle_wex_manager_bind(struct wl_client *client, void *data,
 		return;
 	}
 	wl_resource_set_implementation(resource, &wex_manager_impl, manager, NULL);
+
+	struct wex_manager_bound *bound = znew(*bound);
+	bound->resource = resource;
+	bound->manager = manager;
+	bound->destroy.notify = handle_manager_resource_destroy;
+	wl_resource_add_destroy_listener(resource, &bound->destroy);
+	wl_list_insert(&manager->manager_resources, &bound->link);
+
 	if (version >= 3) {
 		const char *xdisplay = "";
 #if HAVE_XWAYLAND
@@ -1528,9 +2007,11 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->windows);
 	wl_list_init(&manager->foreign_windows);
 	wl_list_init(&manager->render_surfaces);
+	wl_list_init(&manager->thumbnails);
+	wl_list_init(&manager->manager_resources);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 13, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 14, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
@@ -1549,6 +2030,16 @@ wex_window_manager_finish(struct server *server)
 	struct wex_window_manager *manager = server->wex_window_manager;
 	if (!manager) {
 		return;
+	}
+
+	manager_clear_all_thumbnails(manager);
+	manager_end_peek(manager);
+
+	struct wex_manager_bound *bound, *bound_tmp;
+	wl_list_for_each_safe(bound, bound_tmp, &manager->manager_resources, link) {
+		wl_list_remove(&bound->destroy.link);
+		wl_list_remove(&bound->link);
+		free(bound);
 	}
 
 	struct wex_window *win, *win_tmp;

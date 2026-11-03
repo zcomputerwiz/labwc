@@ -29,6 +29,7 @@
 #include "output-virtual.h"
 #include "protocols/cosmic-workspaces.h"
 #include "protocols/ext-workspace.h"
+#include "protocols/wex-window.h"
 #include "regions.h"
 #include "view.h"
 #include "xwayland.h"
@@ -158,6 +159,20 @@ output_frame_notify(struct wl_listener *listener, void *data)
 }
 
 static void
+output_commit_notify(struct wl_listener *listener, void *data)
+{
+	struct output *output = wl_container_of(listener, output, commit);
+	struct server *server = output->server;
+	if (!server || !server->wex_window_manager) {
+		return;
+	}
+	if (!wl_list_empty(&server->outputs) &&
+			output == wl_container_of(server->outputs.next, output, link)) {
+		wex_window_manager_on_output_commit(server->wex_window_manager);
+	}
+}
+
+static void
 output_destroy_notify(struct wl_listener *listener, void *data)
 {
 	struct output *output = wl_container_of(listener, output, destroy);
@@ -171,6 +186,7 @@ output_destroy_notify(struct wl_listener *listener, void *data)
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->request_state.link);
+	wl_list_remove(&output->commit.link);
 	seat_output_layout_changed(seat);
 
 	for (size_t i = 0; i < ARRAY_SIZE(output->layer_tree); i++) {
@@ -484,6 +500,9 @@ new_output_notify(struct wl_listener *listener, void *data)
 
 	output->request_state.notify = output_request_state_notify;
 	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
+
+	output->commit.notify = output_commit_notify;
+	wl_signal_add(&wlr_output->events.commit, &output->commit);
 
 	wl_list_init(&output->regions);
 

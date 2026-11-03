@@ -23,6 +23,15 @@ struct wex_window_manager {
 	struct wl_list render_surfaces; /* producer-owned cross-process render roles */
 	struct wl_listener display_destroy;
 	struct wex_window *pointer_capture;
+	struct wl_list thumbnails;        /* struct wex_thumbnail_entry.link */
+	struct wl_list manager_resources; /* struct wex_manager_bound.link */
+	uint64_t frame_counter;
+	bool peek_active;
+	char peek_target[33];
+	char peek_keep[64][33];
+	size_t peek_keep_count;
+	struct wl_resource *peek_resource;
+	struct wl_client *peek_client;
 };
 
 struct wex_window {
@@ -55,10 +64,16 @@ struct wex_window {
 	int32_t effects_bottom;
 	struct wlr_scene_tree *shadow_tree;
 	struct wlr_scene_tree *backdrop_tree;
+
+	/* Live thumbnails (v14) */
+	struct wlr_scene_tree *thumbnail_tree;
 };
 
 void wex_window_apply_corner_radius(struct wex_window *win);
 void wex_window_update_effects(struct wex_window *win);
+void wex_window_drop_thumbnails(struct wex_window *win);
+void wex_window_manager_on_output_commit(struct wex_window_manager *manager);
+void wex_window_manager_on_view_map(struct view *view);
 
 void wex_window_manager_init(struct server *server);
 void wex_window_manager_finish(struct server *server);

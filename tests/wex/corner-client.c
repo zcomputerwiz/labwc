@@ -104,10 +104,10 @@ test_version_negotiation(const char *socket_name)
 		return 1;
 	}
 
-	printf("[corner-client] advertised wex_window_manager_v1 version: %u (expected >= 12)\n",
+	printf("[corner-client] advertised wex_window_manager_v1 version: %u (expected >= 14)\n",
 		tracker.wex_mgr_version);
-	if (tracker.wex_mgr_version < 12) {
-		fprintf(stderr, "ERROR: expected advertised version >= 12, got %u\n",
+	if (tracker.wex_mgr_version < 14) {
+		fprintf(stderr, "ERROR: expected advertised version >= 14, got %u\n",
 			tracker.wex_mgr_version);
 		wl_registry_destroy(registry);
 		wl_display_disconnect(display);
@@ -179,6 +179,28 @@ test_version_negotiation(const char *socket_name)
 	wl_display_roundtrip(display);
 	wex_window_manager_v1_destroy(mgr13);
 	printf("[corner-client] SUCCESS: version 13 binding succeeded\n");
+
+	/* Test 4: Bind at version 14 (v14 peer with set_thumbnails, set_peek, frame) */
+	printf("[corner-client] binding wex_window_manager_v1 at version 14 (v14 peer)...\n");
+	struct wex_window_manager_v1 *mgr14 = wl_registry_bind(registry,
+		tracker.wex_mgr_name, &wex_window_manager_v1_interface, 14);
+	if (!mgr14) {
+		fprintf(stderr, "ERROR: failed to bind at version 14\n");
+		wl_registry_destroy(registry);
+		wl_display_disconnect(display);
+		return 1;
+	}
+	uint32_t bound_v14 = wl_proxy_get_version((struct wl_proxy *)mgr14);
+	if (bound_v14 != 14) {
+		fprintf(stderr, "ERROR: proxy version is %u, expected 14\n", bound_v14);
+		wex_window_manager_v1_destroy(mgr14);
+		wl_registry_destroy(registry);
+		wl_display_disconnect(display);
+		return 1;
+	}
+	wl_display_roundtrip(display);
+	wex_window_manager_v1_destroy(mgr14);
+	printf("[corner-client] SUCCESS: version 14 binding succeeded\n");
 
 	wl_registry_destroy(registry);
 	wl_display_disconnect(display);
@@ -539,6 +561,461 @@ test_effects(const char *socket_name, const char *barrier_dir)
 	return 0;
 }
 
+static void
+handle_capture_cb(void *data, struct wex_window_v1 *window, const char *handle)
+{
+	(void)window;
+	char *buf = data;
+	if (buf) {
+		snprintf(buf, 33, "%s", handle);
+	}
+}
+static const struct wex_window_v1_listener capture_listener = {
+	.handle = handle_capture_cb,
+};
+
+struct wex_thumbnail_record {
+	char dest[32];
+	char src[32];
+	uint32_t flags;
+	uint32_t opacity;
+	int32_t dest_rect[4];
+	int32_t source_rect[4];
+};
+
+static int
+test_thumbnails(const char *socket_name, const char *barrier_dir)
+{
+	printf("[corner-client] running visual thumbnails (v14 set_thumbnails) tests...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct xx_zone_v1 *zone = NULL;
+	if (ctx.zone_manager) {
+		zone = xx_zone_manager_v1_get_zone(ctx.zone_manager, NULL);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	/* Background window: 1280x800 solid dark gray 0xFF222222 */
+	struct wex_window_obj bg_win;
+	if (!wex_window_init(&bg_win, &ctx, "BgWindow", 1280, 800, 0xFF222222)) {
+		fprintf(stderr, "failed to create bg_win\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	bg_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, bg_win.xdg_toplevel);
+	wex_window_v1_set_layer(bg_win.wex_win, WEX_WINDOW_V1_LAYER_DESKTOP);
+	if (zone) {
+		bg_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, bg_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, bg_win.zone_item);
+		xx_zone_item_v1_set_position(bg_win.zone_item, 0, 0);
+	}
+	wl_surface_commit(bg_win.surface);
+
+	/* Source window A: 200x200 solid green 0xFF00FF00 at (100, 100) */
+	char handle_A[33] = {0};
+	struct wex_window_obj win_A;
+	if (!wex_window_init(&win_A, &ctx, "SrcA", 200, 200, 0xFF00FF00)) {
+		fprintf(stderr, "failed to create win_A\n");
+		return 1;
+	}
+	win_A.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_A.xdg_toplevel);
+	wex_window_v1_add_listener(win_A.wex_win, &capture_listener, handle_A);
+	wex_window_v1_set_layer(win_A.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_A.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_A.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_A.zone_item);
+		xx_zone_item_v1_set_position(win_A.zone_item, 100, 100);
+	}
+	wl_surface_commit(win_A.surface);
+
+	/* Destination window B: 300x300 solid navy 0xFF112233 at (400, 100) */
+	char handle_B[33] = {0};
+	struct wex_window_obj win_B;
+	if (!wex_window_init(&win_B, &ctx, "DestB", 300, 300, 0xFF112233)) {
+		fprintf(stderr, "failed to create win_B\n");
+		return 1;
+	}
+	win_B.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_B.xdg_toplevel);
+	wex_window_v1_add_listener(win_B.wex_win, &capture_listener, handle_B);
+	wex_window_v1_set_layer(win_B.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_B.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_B.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_B.zone_item);
+		xx_zone_item_v1_set_position(win_B.zone_item, 400, 100);
+	}
+	wl_surface_commit(win_B.surface);
+
+	wl_display_roundtrip(ctx.display);
+	wex_window_commit_buffer(&bg_win);
+	wex_window_commit_buffer(&win_A);
+	wex_window_commit_buffer(&win_B);
+	wl_display_roundtrip(ctx.display);
+
+	if (strlen(handle_A) != 32 || strlen(handle_B) != 32) {
+		fprintf(stderr, "ERROR: invalid handles A='%s' B='%s'\n", handle_A, handle_B);
+		return 1;
+	}
+
+	/* Step 1: Set thumbnail on B showing source A scaled at (50, 50, 150, 150) */
+	printf("[corner-client] Step 1: setting thumbnail on Dest B (rect 50,50,150,150) showing Src A...\n");
+	struct wex_thumbnail_record rec = {0};
+	memcpy(rec.dest, handle_B, 32);
+	memcpy(rec.src, handle_A, 32);
+	rec.flags = WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE;
+	rec.opacity = 255;
+	rec.dest_rect[0] = 50;
+	rec.dest_rect[1] = 50;
+	rec.dest_rect[2] = 150;
+	rec.dest_rect[3] = 150;
+
+	struct wl_array arr;
+	wl_array_init(&arr);
+	void *p = wl_array_add(&arr, sizeof(rec));
+	memcpy(p, &rec, sizeof(rec));
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_array_release(&arr);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_thumb_active", "b_thumb_active_cont");
+
+	/* Step 2: Minimize source A: thumbnail inside B must still be visible */
+	printf("[corner-client] Step 2: minimizing source window A (thumbnail should keep showing buffer)...\n");
+	xdg_toplevel_set_minimized(win_A.xdg_toplevel);
+	wl_surface_commit(win_A.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_thumb_minimized", "b_thumb_minimized_cont");
+
+	/* Step 3: Clear thumbnail with empty array: B becomes all navy again */
+	printf("[corner-client] Step 3: clearing thumbnails with empty array...\n");
+	wl_array_init(&arr);
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_thumb_cleared", "b_thumb_cleared_cont");
+
+	/* Step 4: Stale handle + destroyed source + malformed array */
+	printf("[corner-client] Step 4: testing robustness (malformed array, stale handle, destroyed source)...\n");
+
+	/* 4a: Malformed array (not multiple of 104) */
+	char malformed[77] = {0};
+	wl_array_init(&arr);
+	arr.data = malformed;
+	arr.size = sizeof(malformed);
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_display_roundtrip(ctx.display);
+	if (wl_display_get_error(ctx.display) != 0) {
+		fprintf(stderr, "ERROR: malformed array caused display error\n");
+		return 1;
+	}
+
+	/* 4b: Stale handle */
+	memset(&rec, 0, sizeof(rec));
+	memcpy(rec.dest, handle_B, 32);
+	memcpy(rec.src, "stale_handle_nonexistent_0000000", 32);
+	rec.flags = WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE;
+	rec.dest_rect[0] = 10; rec.dest_rect[1] = 10;
+	rec.dest_rect[2] = 50; rec.dest_rect[3] = 50;
+	wl_array_init(&arr);
+	p = wl_array_add(&arr, sizeof(rec));
+	memcpy(p, &rec, sizeof(rec));
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_array_release(&arr);
+	wl_display_roundtrip(ctx.display);
+	if (wl_display_get_error(ctx.display) != 0) {
+		fprintf(stderr, "ERROR: stale handle caused display error\n");
+		return 1;
+	}
+
+	/* 4c: Destroyed source */
+	char handle_temp[33] = {0};
+	struct wex_window_obj win_temp;
+	if (!wex_window_init(&win_temp, &ctx, "TempSrc", 100, 100, 0xFFFF00FF)) return 1;
+	win_temp.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_temp.xdg_toplevel);
+	wex_window_v1_add_listener(win_temp.wex_win, &capture_listener, handle_temp);
+	wl_surface_commit(win_temp.surface);
+	wl_display_roundtrip(ctx.display);
+	wex_window_finish(&win_temp);
+	wl_display_roundtrip(ctx.display);
+
+	memset(&rec, 0, sizeof(rec));
+	memcpy(rec.dest, handle_B, 32);
+	memcpy(rec.src, handle_temp, 32);
+	rec.flags = WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE;
+	rec.dest_rect[0] = 10; rec.dest_rect[1] = 10;
+	rec.dest_rect[2] = 50; rec.dest_rect[3] = 50;
+	wl_array_init(&arr);
+	p = wl_array_add(&arr, sizeof(rec));
+	memcpy(p, &rec, sizeof(rec));
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_array_release(&arr);
+	wl_display_roundtrip(ctx.display);
+	if (wl_display_get_error(ctx.display) != 0) {
+		fprintf(stderr, "ERROR: destroyed source handle caused display error\n");
+		return 1;
+	}
+
+	wex_window_finish(&win_A);
+	wex_window_finish(&win_B);
+	wex_window_finish(&bg_win);
+	if (zone) xx_zone_v1_destroy(zone);
+	wex_context_finish(&ctx);
+	printf("[corner-client] SUCCESS: thumbnails scenario completed successfully\n");
+	return 0;
+}
+
+static int
+test_peek(const char *socket_name, const char *barrier_dir)
+{
+	printf("[corner-client] running visual peek (v14 set_peek) tests...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct xx_zone_v1 *zone = NULL;
+	if (ctx.zone_manager) {
+		zone = xx_zone_manager_v1_get_zone(ctx.zone_manager, NULL);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	/* Background window: 1280x800 solid navy 0xFF112233 */
+	struct wex_window_obj bg_win;
+	if (!wex_window_init(&bg_win, &ctx, "BgWindow", 1280, 800, 0xFF112233)) {
+		fprintf(stderr, "failed to create bg_win\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	bg_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, bg_win.xdg_toplevel);
+	wex_window_v1_set_layer(bg_win.wex_win, WEX_WINDOW_V1_LAYER_DESKTOP);
+	if (zone) {
+		bg_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, bg_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, bg_win.zone_item);
+		xx_zone_item_v1_set_position(bg_win.zone_item, 0, 0);
+	}
+	wl_surface_commit(bg_win.surface);
+
+	/* Window A: 100x100 solid Red 0xFFFF0000 at (100, 200) */
+	char handle_A[33] = {0};
+	struct wex_window_obj win_A;
+	if (!wex_window_init(&win_A, &ctx, "WinA", 100, 100, 0xFFFF0000)) return 1;
+	win_A.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_A.xdg_toplevel);
+	wex_window_v1_add_listener(win_A.wex_win, &capture_listener, handle_A);
+	wex_window_v1_set_layer(win_A.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_A.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_A.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_A.zone_item);
+		xx_zone_item_v1_set_position(win_A.zone_item, 100, 200);
+	}
+	wl_surface_commit(win_A.surface);
+
+	/* Window B: 100x100 solid Green 0xFF00FF00 at (300, 200) */
+	char handle_B[33] = {0};
+	struct wex_window_obj win_B;
+	if (!wex_window_init(&win_B, &ctx, "WinB", 100, 100, 0xFF00FF00)) return 1;
+	win_B.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_B.xdg_toplevel);
+	wex_window_v1_add_listener(win_B.wex_win, &capture_listener, handle_B);
+	wex_window_v1_set_layer(win_B.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_B.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_B.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_B.zone_item);
+		xx_zone_item_v1_set_position(win_B.zone_item, 300, 200);
+	}
+	wl_surface_commit(win_B.surface);
+
+	/* Window C: 100x100 solid Blue 0xFF0000FF at (500, 200) */
+	char handle_C[33] = {0};
+	struct wex_window_obj win_C;
+	if (!wex_window_init(&win_C, &ctx, "WinC", 100, 100, 0xFF0000FF)) return 1;
+	win_C.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_C.xdg_toplevel);
+	wex_window_v1_add_listener(win_C.wex_win, &capture_listener, handle_C);
+	wex_window_v1_set_layer(win_C.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_C.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_C.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_C.zone_item);
+		xx_zone_item_v1_set_position(win_C.zone_item, 500, 200);
+	}
+	wl_surface_commit(win_C.surface);
+
+	wl_display_roundtrip(ctx.display);
+	wex_window_commit_buffer(&bg_win);
+	wex_window_commit_buffer(&win_A);
+	wex_window_commit_buffer(&win_B);
+	wex_window_commit_buffer(&win_C);
+	wl_display_roundtrip(ctx.display);
+
+	if (strlen(handle_A) != 32 || strlen(handle_B) != 32 || strlen(handle_C) != 32) {
+		fprintf(stderr, "ERROR: invalid handles A='%s' B='%s' C='%s'\n", handle_A, handle_B, handle_C);
+		return 1;
+	}
+
+	/* Step 1: Set peek with target = B, keep = empty */
+	printf("[corner-client] Step 1: set_peek(target=B, keep=[]): A and C should be hidden, B visible...\n");
+	struct wl_array keep;
+	wl_array_init(&keep);
+	wex_window_manager_v1_set_peek(ctx.wex_window_manager, handle_B, &keep);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_peek_active", "b_peek_active_cont");
+
+	/* Step 2: Set peek with empty target: all windows restored */
+	printf("[corner-client] Step 2: set_peek(target='', keep=[]): all windows should be restored...\n");
+	wex_window_manager_v1_set_peek(ctx.wex_window_manager, "", &keep);
+	wl_array_release(&keep);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_peek_ended", "b_peek_ended_cont");
+
+	wex_window_finish(&win_A);
+	wex_window_finish(&win_B);
+	wex_window_finish(&win_C);
+	wex_window_finish(&bg_win);
+	if (zone) xx_zone_v1_destroy(zone);
+	wex_context_finish(&ctx);
+	printf("[corner-client] SUCCESS: peek scenario completed successfully\n");
+	return 0;
+}
+
+struct frame_stats {
+	unsigned count;
+	uint32_t frames[16];
+	uint64_t times_ns[16];
+};
+
+static void
+mgr_frame_cb(void *data, struct wex_window_manager_v1 *mgr,
+	uint32_t frame, uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec)
+{
+	(void)mgr;
+	struct frame_stats *stats = data;
+	if (stats->count < 16) {
+		stats->frames[stats->count] = frame;
+		stats->times_ns[stats->count] = ((uint64_t)sec_hi << 32 | sec_lo) * 1000000000ULL + nsec;
+	}
+	stats->count++;
+}
+
+static const struct wex_window_manager_v1_listener frame_listener = {
+	.native_environment = NULL,
+	.frame = mgr_frame_cb,
+};
+
+static int
+test_frame(const char *socket_name)
+{
+	printf("[corner-client] running frame event (v14 frame) test...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct frame_stats stats = {0};
+	wex_window_manager_v1_add_listener(ctx.wex_window_manager, &frame_listener, &stats);
+
+	/* Map a window and commit initial buffer */
+	struct wex_window_obj win;
+	if (!wex_window_init(&win, &ctx, "FrameWin", 200, 200, 0xFFFF0000)) return 1;
+	win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win.xdg_toplevel);
+	wex_window_v1_set_layer(win.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	wl_surface_commit(win.surface);
+	wl_display_roundtrip(ctx.display);
+	wex_window_commit_buffer(&win);
+	wl_display_roundtrip(ctx.display);
+
+	/* Wait briefly for initial frame commit to settle */
+	usleep(50000);
+	wl_display_roundtrip(ctx.display);
+
+	/* Buffer change 1: fill with green and commit */
+	printf("[corner-client] Frame test: committing buffer change 1...\n");
+	unsigned count_before = stats.count;
+	uint32_t *pix = win.buffer.data;
+	for (int i = 0; i < 200 * 200; i++) pix[i] = 0xFF00FF00;
+	wl_surface_attach(win.surface, win.buffer.wl_buffer, 0, 0);
+	wl_surface_damage_buffer(win.surface, 0, 0, 200, 200);
+	wl_surface_commit(win.surface);
+	wl_display_flush(ctx.display);
+
+	for (int i = 0; i < 50 && stats.count == count_before; i++) {
+		usleep(20000);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	/* Buffer change 2: fill with blue and commit */
+	printf("[corner-client] Frame test: committing buffer change 2...\n");
+	count_before = stats.count;
+	for (int i = 0; i < 200 * 200; i++) pix[i] = 0xFF0000FF;
+	wl_surface_attach(win.surface, win.buffer.wl_buffer, 0, 0);
+	wl_surface_damage_buffer(win.surface, 0, 0, 200, 200);
+	wl_surface_commit(win.surface);
+	wl_display_flush(ctx.display);
+
+	for (int i = 0; i < 50 && stats.count == count_before; i++) {
+		usleep(20000);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	printf("[corner-client] total frame events received: %u\n", stats.count);
+	if (stats.count < 2) {
+		fprintf(stderr, "ERROR: expected at least 2 frame events, received %u\n", stats.count);
+		wex_window_finish(&win);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	/* Verify increasing frame counters and monotonic timestamps */
+	for (unsigned i = 1; i < stats.count && i < 16; i++) {
+		if (stats.frames[i] <= stats.frames[i - 1]) {
+			fprintf(stderr, "ERROR: frame counter not strictly increasing: frame[%u]=%u <= frame[%u]=%u\n",
+				i, stats.frames[i], i - 1, stats.frames[i - 1]);
+			wex_window_finish(&win);
+			wex_context_finish(&ctx);
+			return 1;
+		}
+		if (stats.times_ns[i] < stats.times_ns[i - 1]) {
+			fprintf(stderr, "ERROR: monotonic time went backwards: time[%u]=%llu < time[%u]=%llu\n",
+				i, (unsigned long long)stats.times_ns[i],
+				i - 1, (unsigned long long)stats.times_ns[i - 1]);
+			wex_window_finish(&win);
+			wex_context_finish(&ctx);
+			return 1;
+		}
+	}
+
+	if (stats.times_ns[0] == 0) {
+		fprintf(stderr, "ERROR: zero monotonic timestamp received\n");
+		wex_window_finish(&win);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	printf("[corner-client] SUCCESS: received %u frame events with strictly increasing counter (%u -> %u) and monotonic timestamps\n",
+		stats.count, stats.frames[0], stats.frames[stats.count - 1]);
+
+	wex_window_finish(&win);
+	wex_context_finish(&ctx);
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -572,6 +1049,12 @@ main(int argc, char **argv)
 		return test_render(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "effects") == 0) {
 		return test_effects(socket_name, barrier_dir);
+	} else if (strcmp(scenario, "thumbnails") == 0) {
+		return test_thumbnails(socket_name, barrier_dir);
+	} else if (strcmp(scenario, "peek") == 0) {
+		return test_peek(socket_name, barrier_dir);
+	} else if (strcmp(scenario, "frame") == 0) {
+		return test_frame(socket_name);
 	} else {
 		fprintf(stderr, "Unknown scenario '%s'\n", scenario);
 		return 1;

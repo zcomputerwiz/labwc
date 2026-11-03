@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="13">
+  <interface name="wex_window_manager_v1" version="14">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -115,6 +115,57 @@
       <arg name="left" type="int"/><arg name="top" type="int"/>
       <arg name="right" type="int"/><arg name="bottom" type="int"/>
     </request>
+
+    <enum name="thumbnail_flags" bitfield="true" since="14">
+      <entry name="visible" value="1"/>
+      <entry name="has_source" value="4" summary="the source rectangle is used, else the whole source window"/>
+    </enum>
+    <request name="set_thumbnails" since="14">
+      <description summary="replace the list of live window thumbnails">
+        Privileged clients only. The compositor draws a scaled live copy of
+        each source window inside its destination window, above the
+        destination's own content (DwmRegisterThumbnail on Windows). The list
+        replaces the previous one; an empty array removes all thumbnails.
+
+        The array holds records of 104 bytes in native byte order:
+          char dest[32]    shared handle of the destination window (no NUL)
+          char src[32]     shared handle of the source window (no NUL)
+          uint32 flags     thumbnail_flags
+          uint32 opacity   0..255
+          int32 dest_rect[4]    left, top, right, bottom in the destination's
+                                logical window coordinates
+          int32 source_rect[4]  left, top, right, bottom in the source's logical
+                                window coordinates (with has_source)
+        Records with an unknown or stale handle, a source equal to its
+        destination, or an empty rectangle are skipped, so the list may refer
+        to windows that are gone. A minimized or hidden source keeps showing
+        its last contents. At most 80 records are used.
+      </description>
+      <arg name="records" type="array"/>
+    </request>
+    <request name="set_peek" since="14">
+      <description summary="hide every window except a target and the windows kept">
+        Privileged clients only (Aero Peek). While a target is set, every
+        window that is neither the target nor in keep (an array of 32 byte
+        shared handles) is not drawn; the target is drawn even when
+        minimized. An empty target handle ends the peek. Stale handles are
+        ignored. The compositor ends the peek when the client disconnects.
+      </description>
+      <arg name="target" type="string"/>
+      <arg name="keep" type="array"/>
+    </request>
+    <event name="frame" since="14">
+      <description summary="a frame was presented">
+        Sent to the manager (privileged clients) after each commit of the
+        primary output, with a counter that increases by one per frame and the
+        CLOCK_MONOTONIC time of the commit. The shell uses it as the frame
+        clock of DwmFlush; it is a composed-frame clock, not a display proof.
+      </description>
+      <arg name="frame" type="uint" summary="low 32 bits of the frame counter"/>
+      <arg name="sec_hi" type="uint"/>
+      <arg name="sec_lo" type="uint"/>
+      <arg name="nsec" type="uint"/>
+    </event>
   </interface>
 
   <interface name="wex_render_surface_v1" version="1">

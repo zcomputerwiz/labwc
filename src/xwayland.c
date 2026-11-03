@@ -753,6 +753,7 @@ xwayland_view_map(struct view *view)
 
 	view->mapped = true;
 	wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+	wex_window_manager_on_view_map(view);
 
 	if (view->surface != xwayland_surface->surface) {
 		if (view->surface) {

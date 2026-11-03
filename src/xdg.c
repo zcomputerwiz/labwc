@@ -857,6 +857,7 @@ xdg_toplevel_view_map(struct view *view)
 	}
 	struct wlr_xdg_surface *xdg_surface = xdg_surface_from_view(view);
 	wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+	wex_window_manager_on_view_map(view);
 
 	if (!view->foreign_toplevel) {
 		init_foreign_toplevel(view);

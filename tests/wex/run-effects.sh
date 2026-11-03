@@ -18,6 +18,7 @@ echo "=========================================================="
 echo " Building labwc compositor and test clients"
 echo "=========================================================="
 ninja -C "$BUILD_DIR"
+make -C "$SCRIPT_DIR" wex-window-v1-client-protocol.h wex-window-v1-protocol.c
 make -C "$SCRIPT_DIR"
 
 echo "=========================================================="
@@ -201,6 +202,79 @@ run_check "Effects Cleared: Shadow pixel (403, 300) is restored to background Na
 
 run_check "Effects Cleared: Interior pixel (300, 300) returns to translucent without backdrop" \
     python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/16_effects_cleared.png" 300 300 081119 5
+
+# TEST 21: wex_window_manager_v1 v14 set_thumbnails (scaled, minimized source, clear, robustness)
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex-window-v1 v14 set_thumbnails (scaled, minimized source, cleared, robust)..."
+"$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario thumbnails --barrier-dir "$BARRIER_DIR" &
+THUMB_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_active" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/21_thumb_active.png"
+touch "$BARRIER_DIR/b_thumb_active_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_minimized" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/22_thumb_minimized.png"
+touch "$BARRIER_DIR/b_thumb_minimized_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_cleared" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/23_thumb_cleared.png"
+touch "$BARRIER_DIR/b_thumb_cleared_cont"
+
+wait "$THUMB_PID"
+
+run_check "Thumbnail Active: Centre of thumbnail in dest B (500, 200) shows scaled green source A" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/21_thumb_active.png" 500 200 00FF00 5
+
+run_check "Thumbnail Active: Outside thumbnail rect in dest B (420, 120) remains navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/21_thumb_active.png" 420 120 112233 5
+
+run_check "Thumbnail Minimized: Minimized source window A position (150, 150) shows background" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/22_thumb_minimized.png" 150 150 222222 5
+
+run_check "Thumbnail Minimized: Dest B thumbnail rect (500, 200) still displays source buffer" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/22_thumb_minimized.png" 500 200 00FF00 5
+
+run_check "Thumbnail Cleared: Dest B thumbnail rect (500, 200) restored to navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/23_thumb_cleared.png" 500 200 112233 5
+
+# TEST 22: wex_window_manager_v1 v14 set_peek (Aero Peek)
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex-window-v1 v14 set_peek (Aero Peek target and restore)..."
+"$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario peek --barrier-dir "$BARRIER_DIR" &
+PEEK_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_peek_active" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/24_peek_active.png"
+touch "$BARRIER_DIR/b_peek_active_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_peek_ended" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/25_peek_ended.png"
+touch "$BARRIER_DIR/b_peek_ended_cont"
+
+wait "$PEEK_PID"
+
+run_check "Peek Active: Window A position (150, 250) is hidden, showing background navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/24_peek_active.png" 150 250 112233 5
+
+run_check "Peek Active: Target window B (350, 250) remains visible green" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/24_peek_active.png" 350 250 00FF00 5
+
+run_check "Peek Active: Window C position (550, 250) is hidden, showing background navy" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/24_peek_active.png" 550 250 112233 5
+
+run_check "Peek Ended: Window A (150, 250) is restored to red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/25_peek_ended.png" 150 250 FF0000 5
+
+run_check "Peek Ended: Window B (350, 250) remains visible green" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/25_peek_ended.png" 350 250 00FF00 5
+
+run_check "Peek Ended: Window C (550, 250) is restored to blue" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/25_peek_ended.png" 550 250 0000FF 5
+
+# TEST 23: wex_window_manager_v1 v14 frame event (clock commit notifications)
+run_check "Frame Events: Increasing counter and monotonic clock on output commit" \
+    "$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario frame
 
 echo "=========================================================="
 echo " ALL TESTS PASSED SUCCESSFULLY ($TESTS_PASSED/$TESTS_PASSED)"
