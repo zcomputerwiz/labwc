@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <wayland-server-core.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include "buffer.h"
 #include "common/mem.h"
 #include "common/scaled-img-buffer.h"

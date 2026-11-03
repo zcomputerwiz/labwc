@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef LABWC_NODE_DESCRIPTOR_H
 #define LABWC_NODE_DESCRIPTOR_H
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 
 struct view;
 struct lab_layer_surface;

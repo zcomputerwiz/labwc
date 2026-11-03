@@ -574,6 +574,129 @@ static const struct wex_window_v1_listener capture_listener = {
 	.handle = handle_capture_cb,
 };
 
+static int
+test_blur(const char *socket_name, const char *barrier_dir)
+{
+	printf("[corner-client] running visual backdrop blur scenario...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct xx_zone_v1 *zone = NULL;
+	if (ctx.zone_manager) {
+		zone = xx_zone_manager_v1_get_zone(ctx.zone_manager, NULL);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	/* Background window: 1280x800 with hard vertical edge at x=640 (left white, right black) */
+	struct wex_window_obj bg_win;
+	if (!wex_window_init(&bg_win, &ctx, "BgBlurWindow", 1280, 800, 0xFF000000)) {
+		fprintf(stderr, "failed to create bg_win\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	uint32_t *bg_px = (uint32_t *)bg_win.buffer.data;
+	for (int y = 0; y < 800; y++) {
+		for (int x = 0; x < 1280; x++) {
+			bg_px[y * 1280 + x] = (x < 640) ? 0xFFFFFFFF : 0xFF000000;
+		}
+	}
+	bg_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, bg_win.xdg_toplevel);
+	wex_window_v1_set_layer(bg_win.wex_win, WEX_WINDOW_V1_LAYER_DESKTOP);
+	if (zone) {
+		bg_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, bg_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, bg_win.zone_item);
+		xx_zone_item_v1_set_position(bg_win.zone_item, 0, 0);
+	}
+	wl_surface_commit(bg_win.surface);
+
+	/* Foreground glass window: 400x300 at (440, 250) */
+	/* Screen x=640 corresponds to window x=200 */
+	/* Left half white with alpha 0x40 (premultiplied 0x40404040), right half black with alpha 0x40 (0x40000000) */
+	struct wex_window_obj fg_win;
+	if (!wex_window_init(&fg_win, &ctx, "FgBlurWindow", 400, 300, 0x00000000)) {
+		fprintf(stderr, "failed to create fg_win\n");
+		wex_window_finish(&bg_win);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	uint32_t *fg_px = (uint32_t *)fg_win.buffer.data;
+	for (int y = 0; y < 300; y++) {
+		for (int x = 0; x < 400; x++) {
+			fg_px[y * 400 + x] = (x < 200) ? 0x40404040 : 0x40000000;
+		}
+	}
+
+	char g_blur_handle[33] = {0};
+	fg_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, fg_win.xdg_toplevel);
+	wex_window_v1_add_listener(fg_win.wex_win, &capture_listener, g_blur_handle);
+	wex_window_v1_set_layer(fg_win.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		fg_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, fg_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, fg_win.zone_item);
+		xx_zone_item_v1_set_position(fg_win.zone_item, 440, 250);
+	}
+	wl_surface_commit(fg_win.surface);
+
+	wl_display_roundtrip(ctx.display);
+
+	wex_window_commit_buffer(&bg_win);
+	wex_window_commit_buffer(&fg_win);
+	wl_display_roundtrip(ctx.display);
+
+	if (strlen(g_blur_handle) != 32) {
+		fprintf(stderr, "ERROR: invalid window handle received: '%s'\n", g_blur_handle);
+		wex_window_finish(&fg_win);
+		wex_window_finish(&bg_win);
+		if (zone) xx_zone_v1_destroy(zone);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	/* Step 1: Backdrop NONE */
+	printf("[corner-client] Step 1: backdrop NONE...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		0, WEX_WINDOW_MANAGER_V1_BACKDROP_NONE,
+		0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_none", "b_blur_none_cont");
+
+	/* Step 2: Backdrop BLUR */
+	printf("[corner-client] Step 2: backdrop BLUR...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		0, WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR,
+		0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_active", "b_blur_active_cont");
+
+	/* Step 3: All-zero set_effects clears blur */
+	printf("[corner-client] Step 3: clearing effects...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		0, 0, 0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_cleared", "b_blur_cleared_cont");
+
+	wex_window_finish(&fg_win);
+	wex_window_finish(&bg_win);
+	if (zone) {
+		xx_zone_v1_destroy(zone);
+	}
+	wex_context_finish(&ctx);
+	printf("[corner-client] SUCCESS: blur scenario completed successfully\n");
+	return 0;
+}
+
 struct wex_thumbnail_record {
 	char dest[32];
 	char src[32];
@@ -1049,6 +1172,8 @@ main(int argc, char **argv)
 		return test_render(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "effects") == 0) {
 		return test_effects(socket_name, barrier_dir);
+	} else if (strcmp(scenario, "blur") == 0) {
+		return test_blur(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "thumbnails") == 0) {
 		return test_thumbnails(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "peek") == 0) {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <wlr/types/wlr_layer_shell_v1.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include "common/graphic-helpers.h"
 #include "common/scene-helpers.h"
 #include "common/string-helpers.h"
@@ -40,6 +40,12 @@ get_node_type(struct wlr_scene_node *node)
 			return "surface";
 		}
 		return "buffer";
+#if HAVE_SCENEFX
+	case WLR_SCENE_NODE_SHADOW:
+		return "shadow";
+	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
+		return "optimized-blur";
+#endif
 	}
 	return "error";
 }

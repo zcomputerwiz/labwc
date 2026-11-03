@@ -5,7 +5,7 @@
 #include <wlr/types/wlr_tablet_pad.h>
 #include <wlr/types/wlr_tablet_tool.h>
 #include <wlr/util/log.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include "common/macros.h"
 #include "common/mem.h"
 #include "common/scene-helpers.h"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include "common/graphic-helpers.h"
 #include "ssd.h"
 #include "resize-outlines.h"

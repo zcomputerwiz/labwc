@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <assert.h>
 #include <wlr/types/wlr_data_device.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include <wlr/util/log.h>
 #include "dnd.h"
 #include "input/cursor.h"

@@ -1,0 +1,1 @@
+Vendored SceneFX 0.3 without examples/tinywl; applied 0001-fx_renderer-surfaceless-egl.patch; exported scenefx_dep.

@@ -1,0 +1,2 @@
+option('examples', type: 'boolean', value: true, description: 'Build example applications')
+option('renderers', type: 'array', choices: ['auto', 'gles2'], value: ['auto'], description: 'Select built-in renderers')

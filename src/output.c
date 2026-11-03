@@ -15,7 +15,7 @@
 #include <wlr/types/wlr_drm_lease_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include <wlr/util/region.h>
 #include <wlr/util/log.h>
 #include "common/direction.h"

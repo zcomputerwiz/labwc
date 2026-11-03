@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wlr/types/wlr_xdg_shell.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/util/transform.h>
@@ -1247,6 +1247,31 @@ wex_window_update_effects(struct wex_window *win)
 		win->backdrop_tree = NULL;
 	}
 
+#if HAVE_SCENEFX
+	struct server *server = win->manager ? win->manager->server : (win->view ? win->view->server : NULL);
+	bool is_blur_kind = (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR ||
+	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC ||
+	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA);
+	bool blur_enabled = (server && server->fx_renderer && is_blur_kind);
+
+	if (blur_enabled && server->scene) {
+		struct blur_data bd = blur_data_get_default();
+		if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC) {
+			bd.radius = 12;
+			bd.num_passes = 4;
+			bd.saturation = 1.2f;
+			bd.brightness = 0.85f;
+		} else if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+			bd.radius = 16;
+			bd.num_passes = 4;
+		} else { /* WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR */
+			bd.radius = 5;
+			bd.num_passes = 3;
+		}
+		wlr_scene_set_blur_data(server->scene, bd);
+	}
+#endif
+
 	if (win->effects_backdrop != WEX_WINDOW_MANAGER_V1_BACKDROP_NONE && has_buffer) {
 		win->backdrop_tree = wlr_scene_tree_create(win->view->scene_tree);
 		if (win->backdrop_tree) {
@@ -1267,14 +1292,38 @@ wex_window_update_effects(struct wex_window *win)
 						win->backdrop_tree, bw, bh, bcolor);
 					if (rect) {
 						wlr_scene_node_set_position(&rect->node, bx, by);
+#if HAVE_SCENEFX
+						if (blur_enabled) {
+							wlr_scene_rect_set_backdrop_blur(rect, true);
+							if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+								wlr_scene_rect_set_backdrop_blur_optimized(rect, true);
+							}
+						}
+#endif
 					}
 				}
 			} else if (win->corner_radius > 0 && count > 0) {
-				for (size_t i = 0; i < count; i++) {
+#if HAVE_SCENEFX
+				if (blur_enabled) {
 					struct wlr_scene_rect *rect = wlr_scene_rect_create(
-						win->backdrop_tree, slices[i].width, slices[i].height, bcolor);
+						win->backdrop_tree, width, height, bcolor);
 					if (rect) {
-						wlr_scene_node_set_position(&rect->node, slices[i].x, slices[i].y);
+						wlr_scene_node_set_position(&rect->node, 0, 0);
+						wlr_scene_rect_set_corner_radius(rect, win->corner_radius, CORNER_LOCATION_ALL);
+						wlr_scene_rect_set_backdrop_blur(rect, true);
+						if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+							wlr_scene_rect_set_backdrop_blur_optimized(rect, true);
+						}
+					}
+				} else
+#endif
+				{
+					for (size_t i = 0; i < count; i++) {
+						struct wlr_scene_rect *rect = wlr_scene_rect_create(
+							win->backdrop_tree, slices[i].width, slices[i].height, bcolor);
+						if (rect) {
+							wlr_scene_node_set_position(&rect->node, slices[i].x, slices[i].y);
+						}
 					}
 				}
 			} else {
@@ -1282,6 +1331,14 @@ wex_window_update_effects(struct wex_window *win)
 					win->backdrop_tree, width, height, bcolor);
 				if (rect) {
 					wlr_scene_node_set_position(&rect->node, 0, 0);
+#if HAVE_SCENEFX
+					if (blur_enabled) {
+						wlr_scene_rect_set_backdrop_blur(rect, true);
+						if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+							wlr_scene_rect_set_backdrop_blur_optimized(rect, true);
+						}
+					}
+#endif
 				}
 			}
 		}

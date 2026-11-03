@@ -58,7 +58,11 @@ wlroots = dependency(
 wlroots_has_xwayland = wlroots.get_variable('have_xwayland') == 'true'
 have_libsfdo = not get_option('icon').disabled()
 
-wayland_server = dependency('wayland-server', version: '>=1.19.0')
+wayland_server_version = '>=1.19.0'
+if not get_option('scenefx').disabled()
+  wayland_server_version = '>=1.23'
+endif
+wayland_server = dependency('wayland-server', version: wayland_server_version)
 wayland_protos = dependency('wayland-protocols', version: '>=1.35')
 xkbcommon = dependency('xkbcommon')
 xcb = dependency('xcb', required: get_option('xwayland'))
@@ -109,6 +113,18 @@ conf_data.set10('HAVE_RSVG', have_rsvg)
 
 conf_data.set10('HAVE_LIBSFDO', have_libsfdo)
 
+if get_option('scenefx').disabled()
+  have_scenefx = false
+else
+  scenefx = dependency(
+    'scenefx-0.3',
+    fallback: ['scenefx', 'scenefx_dep'],
+    required: get_option('scenefx'),
+  )
+  have_scenefx = scenefx.found()
+endif
+conf_data.set10('HAVE_SCENEFX', have_scenefx)
+
 if get_option('static_analyzer').enabled()
   add_project_arguments(['-fanalyzer'], language: 'c')
 endif
@@ -154,6 +170,11 @@ if have_libsfdo
     sfdo_icon,
   ]
 endif
+if have_scenefx
+  labwc_deps += [
+    scenefx,
+  ]
+endif
 
 subdir('include')
 subdir('src')
@@ -169,6 +190,7 @@ executable(
   labwc_sources,
   include_directories: [labwc_inc],
   dependencies: labwc_deps,
+  export_dynamic: true,
   install: true,
 )
 

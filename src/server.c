@@ -1,6 +1,40 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _POSIX_C_SOURCE 200809L
 #include "config.h"
+#if HAVE_SCENEFX
+#include <scenefx/render/fx_renderer/fx_renderer.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+struct wlr_allocator *wlr_gbm_allocator_create(int fd);
+
+/*
+ * TEST ONLY (WEX_BLUR_TEST_VGEM=1, headless CI on Mesa llvmpipe with the vgem kernel module): llvmpipe must mmap the
+ * dumb DMA-BUFs wlroots exports, which needs DRM_RDWR on the PRIME fd. This interposes libdrm's function for the whole
+ * process, so it only changes the flags when the variable is set; real GPU sessions never set it.
+ */
+static bool wex_test_vgem(void)
+{
+	const char *value = getenv("WEX_BLUR_TEST_VGEM");
+	return value && !strcmp(value, "1");
+}
+
+int drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd);
+int drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
+{
+	static int (*orig)(int, uint32_t, uint32_t, int *) = NULL;
+	if (!orig) {
+		orig = dlsym(RTLD_NEXT, "drmPrimeHandleToFD");
+	}
+	if (wex_test_vgem()) {
+		flags |= 2; /* DRM_RDWR */
+	}
+	return orig(fd, handle, flags, prime_fd);
+}
+#endif
 #include "protocols/xx-zones.h"
 #include "protocols/wex-window.h"
 #include "protocols/pointer-warp.h"
@@ -389,7 +423,24 @@ handle_renderer_lost(struct wl_listener *listener, void *data)
 
 	wlr_log(WLR_INFO, "Re-creating renderer after GPU reset");
 
+#if HAVE_SCENEFX
+	struct wlr_renderer *renderer = NULL;
+	if (server->fx_renderer) {
+		renderer = fx_renderer_create(server->backend);
+		if (renderer) {
+			wlr_log(WLR_INFO, "Re-created SceneFX renderer after GPU reset");
+		}
+	}
+	if (!renderer) {
+		renderer = wlr_renderer_autocreate(server->backend);
+		server->fx_renderer = false;
+		if (renderer) {
+			wlr_log(WLR_INFO, "Re-created standard wlr_renderer after GPU reset");
+		}
+	}
+#else
 	struct wlr_renderer *renderer = wlr_renderer_autocreate(server->backend);
+#endif
 	if (!renderer) {
 		wlr_log(WLR_ERROR, "Unable to create renderer");
 		return;
@@ -508,7 +559,25 @@ server_init(struct server *server)
 	 * The renderer is responsible for defining the various pixel formats it
 	 * supports for shared memory, this configures that for clients.
 	 */
+#if HAVE_SCENEFX
+	const char *wex_blur_env = getenv("WEX_BLUR");
+	if (wex_blur_env && strcmp(wex_blur_env, "1") == 0) {
+		server->renderer = fx_renderer_create(server->backend);
+		if (server->renderer) {
+			server->fx_renderer = true;
+			wlr_log(WLR_INFO, "Using SceneFX renderer (WEX_BLUR=1)");
+		} else {
+			wlr_log(WLR_INFO, "fx_renderer_create failed; falling back to wlr_renderer_autocreate");
+			server->fx_renderer = false;
+			server->renderer = wlr_renderer_autocreate(server->backend);
+		}
+	} else {
+		server->fx_renderer = false;
+		server->renderer = wlr_renderer_autocreate(server->backend);
+	}
+#else
 	server->renderer = wlr_renderer_autocreate(server->backend);
+#endif
 	if (!server->renderer) {
 		wlr_log(WLR_ERROR, "unable to create renderer");
 		exit(EXIT_FAILURE);
@@ -540,8 +609,30 @@ server_init(struct server *server)
 	 * the renderer and the backend. It handles the buffer creation,
 	 * allowing wlroots to render onto the screen
 	 */
-	server->allocator = wlr_allocator_autocreate(
-		server->backend, server->renderer);
+#if HAVE_SCENEFX
+	if (server->fx_renderer && wex_test_vgem()) {
+		/*
+		 * TEST ONLY: when using SceneFX headless on Mesa surfaceless / vgem,
+		 * wlr_allocator_autocreate reopens the DRM fd as a render node
+		 * (renderD128). In vgem, DRM_IOCTL_MODE_CREATE_DUMB is denied on
+		 * render nodes. Using the primary node (/dev/dri/card0) allows
+		 * dumb buffer creation and PRIME export to succeed.
+		 */
+		int card_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+		if (card_fd >= 0) {
+			server->allocator = wlr_gbm_allocator_create(card_fd);
+			if (server->allocator) {
+				wlr_log(WLR_INFO, "Created GBM allocator with /dev/dri/card0");
+			} else {
+				close(card_fd);
+			}
+		}
+	}
+#endif
+	if (!server->allocator) {
+		server->allocator = wlr_allocator_autocreate(
+			server->backend, server->renderer);
+	}
 	if (!server->allocator) {
 		wlr_log(WLR_ERROR, "unable to create allocator");
 		exit(EXIT_FAILURE);

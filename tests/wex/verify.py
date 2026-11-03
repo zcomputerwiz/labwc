@@ -88,6 +88,20 @@ def check_pixel(image_path, x, y, expected_hex, tolerance=5):
     print(f"PASS: Pixel at ({x},{y}) matches {expected} (got {c})")
     return True
 
+def check_range(image_path, x, y, min_val, max_val, channel=None):
+    img = Image.open(image_path).convert('RGB')
+    if x < 0 or x >= img.width or y < 0 or y >= img.height:
+        print(f"FAIL: Pixel ({x}, {y}) outside image bounds {img.size}")
+        return False
+    c = img.getpixel((x, y))
+    vals = [c[channel]] if channel is not None else [c[0], c[1], c[2]]
+    for v in vals:
+        if v < min_val or v > max_val:
+            print(f"FAIL: Pixel at ({x},{y}) value {c} out of range [{min_val}, {max_val}]")
+            return False
+    print(f"PASS: Pixel at ({x},{y}) value {c} in range [{min_val}, {max_val}]")
+    return True
+
 def compare_images(image1_path, image2_path, tolerance=0):
     img1 = Image.open(image1_path).convert('RGB')
     img2 = Image.open(image2_path).convert('RGB')
@@ -109,7 +123,7 @@ def compare_images(image1_path, image2_path, tolerance=0):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: verify.py <check-rect|check-alpha|check-pixel|compare-images> <img_path> [args...]")
+        print("Usage: verify.py <check-rect|check-alpha|check-pixel|check-range|compare-images> <img_path> [args...]")
         sys.exit(1)
         
     cmd = sys.argv[1]
@@ -139,6 +153,13 @@ def main():
         col = sys.argv[5]
         tol = int(sys.argv[6]) if len(sys.argv) > 6 else 5
         res = check_pixel(img, x, y, col, tol)
+    elif cmd == "check-range":
+        x = int(sys.argv[3])
+        y = int(sys.argv[4])
+        min_val = int(sys.argv[5])
+        max_val = int(sys.argv[6])
+        channel = int(sys.argv[7]) if len(sys.argv) > 7 else None
+        res = check_range(img, x, y, min_val, max_val, channel)
     elif cmd == "compare-images":
         img2 = sys.argv[3]
         tol = int(sys.argv[4]) if len(sys.argv) > 4 else 0

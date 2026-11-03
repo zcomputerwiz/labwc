@@ -4,7 +4,7 @@
 #include <cairo.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wlr/types/wlr_scene.h>
+#include "wex-scene.h"
 #include <wlr/util/box.h>
 #include "buffer.h"
 #include "common/graphic-helpers.h"
