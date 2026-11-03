@@ -894,6 +894,168 @@ test_thumbnails(const char *socket_name, const char *barrier_dir)
 	return 0;
 }
 
+/* TEST 24: wex_window_manager_v1 v14 set_thumbnails with a multi-surface
+ * source: source window A has a wl_subsurface child, and the thumbnail must
+ * mirror both the parent surface and the subsurface (thumbnail_collect /
+ * apply_thumbnail_geometry in wex-window.c). */
+static int
+test_thumbnails_subsurface(const char *socket_name, const char *barrier_dir)
+{
+	printf("[corner-client] running visual thumbnails with subsurface source (multi-surface mirror) tests...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	if (!ctx.subcompositor) {
+		fprintf(stderr, "wl_subcompositor not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct xx_zone_v1 *zone = NULL;
+	if (ctx.zone_manager) {
+		zone = xx_zone_manager_v1_get_zone(ctx.zone_manager, NULL);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	/* Background window: 1280x800 solid dark gray 0xFF222222 */
+	struct wex_window_obj bg_win;
+	if (!wex_window_init(&bg_win, &ctx, "BgWindow", 1280, 800, 0xFF222222)) {
+		fprintf(stderr, "failed to create bg_win\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	bg_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, bg_win.xdg_toplevel);
+	wex_window_v1_set_layer(bg_win.wex_win, WEX_WINDOW_V1_LAYER_DESKTOP);
+	if (zone) {
+		bg_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, bg_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, bg_win.zone_item);
+		xx_zone_item_v1_set_position(bg_win.zone_item, 0, 0);
+	}
+	wl_surface_commit(bg_win.surface);
+
+	/* Source window A: 200x200 solid red 0xFFFF0000 at (100, 100) */
+	char handle_A[33] = {0};
+	struct wex_window_obj win_A;
+	if (!wex_window_init(&win_A, &ctx, "SrcA", 200, 200, 0xFFFF0000)) {
+		fprintf(stderr, "failed to create win_A\n");
+		return 1;
+	}
+	win_A.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_A.xdg_toplevel);
+	wex_window_v1_add_listener(win_A.wex_win, &capture_listener, handle_A);
+	wex_window_v1_set_layer(win_A.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_A.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_A.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_A.zone_item);
+		xx_zone_item_v1_set_position(win_A.zone_item, 100, 100);
+	}
+	wl_surface_commit(win_A.surface);
+
+	/* Destination window B: 400x400 solid navy 0xFF112233 at (400, 100) */
+	char handle_B[33] = {0};
+	struct wex_window_obj win_B;
+	if (!wex_window_init(&win_B, &ctx, "DestB", 400, 400, 0xFF112233)) {
+		fprintf(stderr, "failed to create win_B\n");
+		return 1;
+	}
+	win_B.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_B.xdg_toplevel);
+	wex_window_v1_add_listener(win_B.wex_win, &capture_listener, handle_B);
+	wex_window_v1_set_layer(win_B.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		win_B.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager, win_B.xdg_toplevel);
+		xx_zone_v1_add_item(zone, win_B.zone_item);
+		xx_zone_item_v1_set_position(win_B.zone_item, 400, 100);
+	}
+	wl_surface_commit(win_B.surface);
+
+	wl_display_roundtrip(ctx.display);
+	wex_window_commit_buffer(&bg_win);
+	wex_window_commit_buffer(&win_A);
+	wex_window_commit_buffer(&win_B);
+	wl_display_roundtrip(ctx.display);
+
+	if (strlen(handle_A) != 32 || strlen(handle_B) != 32) {
+		fprintf(stderr, "ERROR: invalid handles A='%s' B='%s'\n", handle_A, handle_B);
+		return 1;
+	}
+
+	/* Subsurface of A: 100x100 solid green 0xFF00FF00 at (50, 50) inside A */
+	struct wl_surface *sub_surface = wl_compositor_create_surface(ctx.compositor);
+	if (!sub_surface) {
+		fprintf(stderr, "failed to create subsurface surface\n");
+		return 1;
+	}
+	struct wl_subsurface *sub = wl_subcompositor_get_subsurface(ctx.subcompositor,
+		sub_surface, win_A.surface);
+	if (!sub) {
+		fprintf(stderr, "failed to create wl_subsurface\n");
+		wl_surface_destroy(sub_surface);
+		return 1;
+	}
+	struct wex_buffer sub_buf;
+	if (!wex_buffer_create(&ctx, &sub_buf, 100, 100, 0xFF00FF00)) {
+		fprintf(stderr, "failed to create subsurface buffer\n");
+		wl_subsurface_destroy(sub);
+		wl_surface_destroy(sub_surface);
+		return 1;
+	}
+	wl_subsurface_set_position(sub, 50, 50);
+	wl_surface_attach(sub_surface, sub_buf.wl_buffer, 0, 0);
+	wl_surface_damage(sub_surface, 0, 0, 100, 100);
+	wl_surface_commit(sub_surface);
+	/* Parent commit applies the subsurface position */
+	wex_window_commit_buffer(&win_A);
+	wl_display_roundtrip(ctx.display);
+
+	/* Step 1: thumbnail on B showing A, dest rect (0,0,400,400) => 2x scale.
+	 * The green subsurface at A-local (50,50) maps to B-local (100,100)..(300,300). */
+	printf("[corner-client] Step 1: setting thumbnail on Dest B (rect 0,0,400,400, 2x) showing Src A + green subsurface...\n");
+	struct wex_thumbnail_record rec = {0};
+	memcpy(rec.dest, handle_B, 32);
+	memcpy(rec.src, handle_A, 32);
+	rec.flags = WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE;
+	rec.opacity = 255;
+	rec.dest_rect[0] = 0;
+	rec.dest_rect[1] = 0;
+	rec.dest_rect[2] = 400;
+	rec.dest_rect[3] = 400;
+
+	struct wl_array arr;
+	wl_array_init(&arr);
+	void *p = wl_array_add(&arr, sizeof(rec));
+	memcpy(p, &rec, sizeof(rec));
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_array_release(&arr);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_thumb_sub_active", "b_thumb_sub_active_cont");
+
+	/* Step 2: move the subsurface to A-local (0,0); the thumbnail must follow
+	 * after the next output frame. Green now maps to B-local (0,0)..(200,200). */
+	printf("[corner-client] Step 2: moving subsurface to (0,0) inside A (thumbnail should follow)...\n");
+	wl_subsurface_set_position(sub, 0, 0);
+	wex_window_commit_buffer(&win_A);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_thumb_sub_moved", "b_thumb_sub_moved_cont");
+
+	wl_subsurface_destroy(sub);
+	wl_surface_destroy(sub_surface);
+	wex_buffer_destroy(&sub_buf);
+	wex_window_finish(&win_A);
+	wex_window_finish(&win_B);
+	wex_window_finish(&bg_win);
+	if (zone) xx_zone_v1_destroy(zone);
+	wex_context_finish(&ctx);
+	printf("[corner-client] SUCCESS: thumbnails-subsurface scenario completed successfully\n");
+	return 0;
+}
+
 static int
 test_peek(const char *socket_name, const char *barrier_dir)
 {
@@ -1176,6 +1338,8 @@ main(int argc, char **argv)
 		return test_blur(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "thumbnails") == 0) {
 		return test_thumbnails(socket_name, barrier_dir);
+	} else if (strcmp(scenario, "thumbnails-subsurface") == 0) {
+		return test_thumbnails_subsurface(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "peek") == 0) {
 		return test_peek(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "frame") == 0) {

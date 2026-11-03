@@ -88,6 +88,28 @@ def check_pixel(image_path, x, y, expected_hex, tolerance=5):
     print(f"PASS: Pixel at ({x},{y}) matches {expected} (got {c})")
     return True
 
+def check_thumb_subsurface(image_path, green_x, green_y, red_x, red_y, tolerance=5):
+    # Multi-surface thumbnail: the green subsurface centre must be green and a
+    # red pixel outside the subsurface but inside the thumbnail must be red.
+    img = Image.open(image_path).convert('RGB')
+    green = hex_to_rgb('00FF00')
+    red = hex_to_rgb('FF0000')
+
+    gc = img.getpixel((green_x, green_y))
+    gd = color_dist(gc, green)
+    if gd > tolerance:
+        print(f"FAIL: Subsurface centre ({green_x},{green_y}): expected green {green}, got {gc} (dist={gd})")
+        return False
+
+    rc = img.getpixel((red_x, red_y))
+    rd = color_dist(rc, red)
+    if rd > tolerance:
+        print(f"FAIL: Red pixel outside subsurface ({red_x},{red_y}): expected red {red}, got {rc} (dist={rd})")
+        return False
+
+    print(f"PASS: Subsurface centre ({green_x},{green_y}) green and red pixel ({red_x},{red_y}) red (tolerance={tolerance})")
+    return True
+
 def check_range(image_path, x, y, min_val, max_val, channel=None):
     img = Image.open(image_path).convert('RGB')
     if x < 0 or x >= img.width or y < 0 or y >= img.height:
@@ -123,7 +145,7 @@ def compare_images(image1_path, image2_path, tolerance=0):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: verify.py <check-rect|check-alpha|check-pixel|check-range|compare-images> <img_path> [args...]")
+        print("Usage: verify.py <check-rect|check-alpha|check-pixel|check-thumb-subsurface|check-range|compare-images> <img_path> [args...]")
         sys.exit(1)
         
     cmd = sys.argv[1]
@@ -153,6 +175,13 @@ def main():
         col = sys.argv[5]
         tol = int(sys.argv[6]) if len(sys.argv) > 6 else 5
         res = check_pixel(img, x, y, col, tol)
+    elif cmd == "check-thumb-subsurface":
+        green_x = int(sys.argv[3])
+        green_y = int(sys.argv[4])
+        red_x = int(sys.argv[5])
+        red_y = int(sys.argv[6])
+        tol = int(sys.argv[7]) if len(sys.argv) > 7 else 5
+        res = check_thumb_subsurface(img, green_x, green_y, red_x, red_y, tol)
     elif cmd == "check-range":
         x = int(sys.argv[3])
         y = int(sys.argv[4])

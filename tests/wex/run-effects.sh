@@ -276,6 +276,36 @@ run_check "Peek Ended: Window C (550, 250) is restored to blue" \
 run_check "Frame Events: Increasing counter and monotonic clock on output commit" \
     "$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario frame
 
+# TEST 24: wex_window_manager_v1 v14 set_thumbnails with a multi-surface source
+# (source window A has a wl_subsurface child; the thumbnail mirrors both the
+# parent surface and the subsurface, and follows the subsurface when it moves)
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex-window-v1 v14 set_thumbnails with a subsurface source (multi-surface mirror)..."
+"$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario thumbnails-subsurface --barrier-dir "$BARRIER_DIR" &
+THUMB_SUB_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_sub_active" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/26_thumb_sub_active.png"
+touch "$BARRIER_DIR/b_thumb_sub_active_cont"
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_sub_moved" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/27_thumb_sub_moved.png"
+touch "$BARRIER_DIR/b_thumb_sub_moved_cont"
+
+wait "$THUMB_SUB_PID"
+
+# Green subsurface (A-local 50,50 100x100) scaled 2x => B-local (100,100)..(300,300),
+# screen (500,200)..(700,400); centre (600,300). Red corner of the thumbnail at
+# B-local (50,50) => screen (450,150).
+run_check "Thumbnail Subsurface: Green subsurface centre (600, 300) and red corner (450, 150) in dest B" \
+    python3 "$SCRIPT_DIR/verify.py" check-thumb-subsurface "$OUT_DIR/26_thumb_sub_active.png" 600 300 450 150 5
+
+# After the move the subsurface is at A-local (0,0) => B-local (0,0)..(200,200),
+# screen (400,100)..(600,300); centre (500,200). The old green area at B-local
+# (300,300) => screen (700,400) is red again.
+run_check "Thumbnail Subsurface Moved: Green centre follows to (500, 200), old area (700, 400) red" \
+    python3 "$SCRIPT_DIR/verify.py" check-thumb-subsurface "$OUT_DIR/27_thumb_sub_moved.png" 500 200 700 400 5
+
 echo "=========================================================="
 echo " ALL TESTS PASSED SUCCESSFULLY ($TESTS_PASSED/$TESTS_PASSED)"
 echo " Screenshots saved in: $OUT_DIR"
