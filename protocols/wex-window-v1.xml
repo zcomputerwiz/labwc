@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="12">
+  <interface name="wex_window_manager_v1" version="13">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -74,6 +74,46 @@
       </description>
       <arg name="id" type="new_id" interface="wex_render_surface_v1"/>
       <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="backdrop" since="13">
+      <description summary="material drawn behind a window's translucent parts"/>
+      <entry name="none" value="0"/>
+      <entry name="blur" value="1" summary="blurred view of what is behind (Aero glass)"/>
+      <entry name="acrylic" value="2" summary="stronger blur with a tint"/>
+      <entry name="mica" value="3" summary="blurred desktop wallpaper with a tint"/>
+      <entry name="gradient" value="4" summary="the tint alone, no blur"/>
+    </enum>
+    <enum name="effect_flags" bitfield="true" since="13">
+      <entry name="shadow" value="1" summary="soft shadow outside the window"/>
+      <entry name="dark" value="2" summary="dark default tint"/>
+      <entry name="tint" value="4" summary="the tint argument replaces the default tint"/>
+      <entry name="region" value="8" summary="the backdrop covers the given region only"/>
+    </enum>
+    <request name="set_effects" since="13">
+      <description summary="set the DWM effects of a window by shared handle">
+        Privileged clients only (the private endpoint). The window is named by
+        the shared handle from wex_window_v1.handle, so the Wine shell can set
+        the effects of any Wine window, not only its own. An unknown or stale
+        handle is a harmless no-op. The request replaces all effects of the
+        window: all-zero arguments clear them.
+
+        corner_radius is clamped to 0..32 like wex_window_v1.set_corner_radius
+        (which stays, for a window's owner). tint is straight (non-premultiplied)
+        0xAARRGGBB, used when the tint flag is set. region is in window
+        logical coordinates (left, top, right, bottom) and used when the region
+        flag is set. The backdrop is drawn behind the window's own pixels, so
+        it shows through only where the window is translucent. Without
+        compositor support for a material (blur, acrylic, mica) the compositor
+        draws the tint alone.
+      </description>
+      <arg name="handle" type="string"/>
+      <arg name="corner_radius" type="uint"/>
+      <arg name="backdrop" type="uint" enum="backdrop"/>
+      <arg name="flags" type="uint" enum="effect_flags"/>
+      <arg name="tint" type="uint"/>
+      <arg name="left" type="int"/><arg name="top" type="int"/>
+      <arg name="right" type="int"/><arg name="bottom" type="int"/>
     </request>
   </interface>
 

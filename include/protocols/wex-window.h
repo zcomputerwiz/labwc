@@ -44,9 +44,21 @@ struct wex_window {
 	struct wl_listener surface_commit;
 	struct wex_corner_piece *corner_pieces;
 	size_t num_corner_pieces;
+
+	/* DWM effects (v13) */
+	uint32_t effects_backdrop;
+	uint32_t effects_flags;
+	uint32_t effects_tint;
+	int32_t effects_left;
+	int32_t effects_top;
+	int32_t effects_right;
+	int32_t effects_bottom;
+	struct wlr_scene_tree *shadow_tree;
+	struct wlr_scene_tree *backdrop_tree;
 };
 
 void wex_window_apply_corner_radius(struct wex_window *win);
+void wex_window_update_effects(struct wex_window *win);
 
 void wex_window_manager_init(struct server *server);
 void wex_window_manager_finish(struct server *server);

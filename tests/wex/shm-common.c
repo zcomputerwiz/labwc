@@ -298,7 +298,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, wex_window_manager_v1_interface.name) == 0) {
 		ctx->wex_window_manager_version = version;
 		ctx->wex_window_manager = wl_registry_bind(registry, name,
-			&wex_window_manager_v1_interface, version < 12 ? version : 12);
+			&wex_window_manager_v1_interface, version < 13 ? version : 13);
 	} else if (strcmp(interface, wp_alpha_modifier_v1_interface.name) == 0) {
 		ctx->alpha_modifier = wl_registry_bind(registry, name,
 			&wp_alpha_modifier_v1_interface, 1);
