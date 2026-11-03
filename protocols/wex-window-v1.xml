@@ -156,10 +156,11 @@
     </request>
     <event name="frame" since="14">
       <description summary="a frame was presented">
-        Sent to the manager (privileged clients) after each commit of the
-        primary output, with a counter that increases by one per frame and the
-        CLOCK_MONOTONIC time of the commit. The shell uses it as the frame
-        clock of DwmFlush; it is a composed-frame clock, not a display proof.
+        Sent to the manager (privileged clients) for each frame of the primary
+        output, with a counter that increases by one per frame and a
+        CLOCK_MONOTONIC time: the display time of the frame when the output
+        backend reports presentation (the wlr_output present event), else the
+        time of the commit. The shell uses it as the frame clock of DwmFlush.
       </description>
       <arg name="frame" type="uint" summary="low 32 bits of the frame counter"/>
       <arg name="sec_hi" type="uint"/>

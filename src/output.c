@@ -166,9 +166,26 @@ output_commit_notify(struct wl_listener *listener, void *data)
 	if (!server || !server->wex_window_manager) {
 		return;
 	}
+	/* once presents are reported the frame events follow them (display time), see output_present_notify */
+	if (!output->present_seen && !wl_list_empty(&server->outputs) &&
+			output == wl_container_of(server->outputs.next, output, link)) {
+		wex_window_manager_on_output_commit(server->wex_window_manager, NULL);
+	}
+}
+
+static void
+output_present_notify(struct wl_listener *listener, void *data)
+{
+	struct output *output = wl_container_of(listener, output, present);
+	struct wlr_output_event_present *event = data;
+	struct server *server = output->server;
+	if (!server || !server->wex_window_manager || !event->presented) {
+		return;
+	}
+	output->present_seen = true;
 	if (!wl_list_empty(&server->outputs) &&
 			output == wl_container_of(server->outputs.next, output, link)) {
-		wex_window_manager_on_output_commit(server->wex_window_manager);
+		wex_window_manager_on_output_commit(server->wex_window_manager, event->when);
 	}
 }
 
@@ -187,6 +204,7 @@ output_destroy_notify(struct wl_listener *listener, void *data)
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->commit.link);
+	wl_list_remove(&output->present.link);
 	seat_output_layout_changed(seat);
 
 	for (size_t i = 0; i < ARRAY_SIZE(output->layer_tree); i++) {
@@ -503,6 +521,8 @@ new_output_notify(struct wl_listener *listener, void *data)
 
 	output->commit.notify = output_commit_notify;
 	wl_signal_add(&wlr_output->events.commit, &output->commit);
+	output->present.notify = output_present_notify;
+	wl_signal_add(&wlr_output->events.present, &output->present);
 
 	wl_list_init(&output->regions);
 

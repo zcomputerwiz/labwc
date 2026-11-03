@@ -435,6 +435,8 @@ struct output {
 	struct wl_listener frame;
 	struct wl_listener request_state;
 	struct wl_listener commit;
+	struct wl_listener present;
+	bool present_seen; /* the backend reports presents: frame events use their time */
 
 	bool leased;
 	bool gamma_lut_changed;

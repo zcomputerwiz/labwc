@@ -1910,7 +1910,7 @@ handle_manager_resource_destroy(struct wl_listener *listener, void *data)
 }
 
 void
-wex_window_manager_on_output_commit(struct wex_window_manager *manager)
+wex_window_manager_on_output_commit(struct wex_window_manager *manager, const struct timespec *when)
 {
 	if (!manager || wl_list_empty(&manager->manager_resources)) {
 		return;
@@ -1929,7 +1929,11 @@ wex_window_manager_on_output_commit(struct wex_window_manager *manager)
 	}
 
 	struct timespec now = {0};
-	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (when) {
+		now = *when;
+	} else {
+		clock_gettime(CLOCK_MONOTONIC, &now);
+	}
 
 	manager->frame_counter++;
 	uint32_t frame_lo = (uint32_t)(manager->frame_counter & 0xFFFFFFFF);

@@ -2,6 +2,7 @@
 #ifndef LABWC_PROTOCOLS_WEX_WINDOW_H
 #define LABWC_PROTOCOLS_WEX_WINDOW_H
 
+#include <time.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
@@ -72,7 +73,8 @@ struct wex_window {
 void wex_window_apply_corner_radius(struct wex_window *win);
 void wex_window_update_effects(struct wex_window *win);
 void wex_window_drop_thumbnails(struct wex_window *win);
-void wex_window_manager_on_output_commit(struct wex_window_manager *manager);
+/* when: the display time of a present event, NULL for the time of the commit */
+void wex_window_manager_on_output_commit(struct wex_window_manager *manager, const struct timespec *when);
 void wex_window_manager_on_view_map(struct view *view);
 
 void wex_window_manager_init(struct server *server);
