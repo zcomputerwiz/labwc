@@ -346,6 +346,11 @@ handle_manager_get_window(struct wl_client *client,
 	if (!view) {
 		return;
 	}
+	if (view->wex_window) {
+		wl_resource_post_error(resource, WL_DISPLAY_ERROR_INVALID_OBJECT,
+			"toplevel already has a wex_window");
+		return;
+	}
 
 	uint32_t version = wl_resource_get_version(resource);
 	struct wex_window *win = znew(*win);
@@ -988,6 +993,15 @@ drop_corner_pieces(struct wex_window *win)
 		wlr_scene_node_destroy(&win->corner_tree->node);
 		win->corner_tree = NULL;
 	}
+	/* Re-enable the original unclipped root buffer node that was disabled
+	 * when the corner slices were created. */
+	if (win->view && win->view->surface && win->view->content_tree) {
+		struct wlr_scene_buffer *root =
+			find_surface_buffer(&win->view->content_tree->node, win->view->surface);
+		if (root) {
+			wlr_scene_node_set_enabled(&root->node, true);
+		}
+	}
 }
 
 static void
@@ -1255,20 +1269,14 @@ wex_window_update_effects(struct wex_window *win)
 	bool blur_enabled = (server && server->fx_renderer && is_blur_kind);
 
 	if (blur_enabled && server->scene) {
-		struct blur_data bd = blur_data_get_default();
-		if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC) {
-			bd.radius = 12;
-			bd.num_passes = 4;
-			bd.saturation = 1.2f;
-			bd.brightness = 0.85f;
-		} else if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
-			bd.radius = 16;
-			bd.num_passes = 4;
-		} else { /* WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR */
-			bd.radius = 5;
-			bd.num_passes = 3;
-		}
-		wlr_scene_set_blur_data(server->scene, bd);
+		/* One fixed scene-wide preset for all blur kinds (blur, acrylic, mica):
+		 * radius 5, 3 passes, defaults for the rest (docs/WAYLAND_BLUR.md).
+		 * The kinds differ only by their tint, which is already applied per
+		 * window. A per-kind preset here would let the last committing window
+		 * decide the blur for every window, so use a single preset.
+		 * wlr_scene_set_blur_data() is a no-op when the data is unchanged, so
+		 * this effectively sets the preset once. */
+		wlr_scene_set_blur_data(server->scene, blur_data_get_default());
 	}
 #endif
 
@@ -1467,6 +1475,16 @@ handle_manager_set_effects(struct wl_client *client,
 	win->effects_top = top;
 	win->effects_right = right;
 	win->effects_bottom = bottom;
+
+	if (flags & WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_REGION) {
+		int64_t rw = (int64_t)right - left;
+		int64_t rh = (int64_t)bottom - top;
+		if (rw <= 0 || rh <= 0 || rw > INT32_MAX || rh > INT32_MAX ||
+		    rw > (1 << 20) || rh > (1 << 20)) {
+			/* invalid region: ignore it, fall back to full-window backdrop */
+			win->effects_flags &= ~WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_REGION;
+		}
+	}
 
 	if (corner_radius > 32) {
 		corner_radius = 32;
@@ -1701,6 +1719,7 @@ handle_manager_set_thumbnails(struct wl_client *client,
 		wl_resource_post_error(resource, 0, "permission denied");
 		return;
 	}
+	manager->thumbnail_resource = resource;
 
 	if (!records || records->size == 0) {
 		manager_clear_all_thumbnails(manager);
@@ -1736,9 +1755,22 @@ handle_manager_set_thumbnails(struct wl_client *client,
 			continue;
 		}
 
-		int dw = rec->dest_rect[2] - rec->dest_rect[0];
-		int dh = rec->dest_rect[3] - rec->dest_rect[1];
-		if (dw <= 0 || dh <= 0) continue;
+		int64_t dw = (int64_t)rec->dest_rect[2] - rec->dest_rect[0];
+		int64_t dh = (int64_t)rec->dest_rect[3] - rec->dest_rect[1];
+		if (dw <= 0 || dh <= 0 ||
+		    dw > INT32_MAX || dh > INT32_MAX ||
+		    dw > (1 << 20) || dh > (1 << 20)) {
+			continue;
+		}
+		if (rec->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_HAS_SOURCE) {
+			int64_t sw = (int64_t)rec->source_rect[2] - rec->source_rect[0];
+			int64_t sh = (int64_t)rec->source_rect[3] - rec->source_rect[1];
+			if (sw <= 0 || sh <= 0 ||
+			    sw > INT32_MAX || sh > INT32_MAX ||
+			    sw > (1 << 20) || sh > (1 << 20)) {
+				continue;
+			}
+		}
 
 		if (!(rec->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE)) continue;
 
@@ -1786,38 +1818,46 @@ static void
 manager_apply_peek_to_view(struct wex_window_manager *manager, struct view *view)
 {
 	if (!view || !view->scene_tree) return;
+
+	/* A native client view hosted by a Wine frame belongs to the frame's
+	 * group; the whole group shares one visibility decision. */
+	struct view *root = wex_scene_group_root(view);
+
 	if (!manager->peek_active) {
 		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
 		return;
 	}
 
-	struct wex_window *win = view->wex_window;
+	struct wex_window *win = root->wex_window;
+	bool always_show = false;
+	bool show_if_mapped = false;
+
 	/* 1. Target window is ALWAYS shown (even if minimized) */
 	if (win && strcmp(win->handle, manager->peek_target) == 0) {
-		wlr_scene_node_set_enabled(&view->scene_tree->node, true);
-		return;
-	}
-
-	/* 2. Shell windows (desktop, taskbars, exclusive edges) stay visible */
-	if (view->wex_exclusive_edge != 0 ||
-	    view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL ||
-	    view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP) {
-		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
-		return;
-	}
-
-	/* 3. Windows in keep list stay visible */
-	if (win) {
+		always_show = true;
+	} else if (root->wex_exclusive_edge != 0 ||
+	    root->wex_layer == WEX_WINDOW_V1_LAYER_SHELL ||
+	    root->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP) {
+		/* 2. Shell windows (desktop, taskbars, exclusive edges) stay visible */
+		show_if_mapped = true;
+	} else if (win) {
+		/* 3. Windows in keep list stay visible */
 		for (size_t i = 0; i < manager->peek_keep_count; i++) {
 			if (strcmp(win->handle, manager->peek_keep[i]) == 0) {
-				wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
-				return;
+				show_if_mapped = true;
+				break;
 			}
 		}
 	}
 
-	/* 4. Otherwise, hide the view */
-	wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+	if (always_show) {
+		wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+	} else if (show_if_mapped) {
+		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
+	} else {
+		/* 4. Otherwise, hide the view */
+		wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+	}
 }
 
 static void
@@ -1903,6 +1943,10 @@ handle_manager_resource_destroy(struct wl_listener *listener, void *data)
 	struct wex_window_manager *manager = bound->manager;
 	if (manager->peek_active && manager->peek_resource == bound->resource) {
 		manager_end_peek(manager);
+	}
+	if (manager->thumbnail_resource == bound->resource) {
+		manager_clear_all_thumbnails(manager);
+		manager->thumbnail_resource = NULL;
 	}
 	wl_list_remove(&bound->destroy.link);
 	wl_list_remove(&bound->link);

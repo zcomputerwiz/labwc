@@ -25,6 +25,7 @@ struct wex_window_manager {
 	struct wl_listener display_destroy;
 	struct wex_window *pointer_capture;
 	struct wl_list thumbnails;        /* struct wex_thumbnail_entry.link */
+	struct wl_resource *thumbnail_resource; /* owner of the thumbnail list */
 	struct wl_list manager_resources; /* struct wex_manager_bound.link */
 	uint64_t frame_counter;
 	bool peek_active;
