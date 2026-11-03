@@ -1513,13 +1513,20 @@ struct wex_thumbnail_record {
 	int32_t source_rect[4];
 };
 
+struct wex_thumb_mirror {
+	struct wl_list link; /* entry->mirrors */
+	struct wlr_surface *surface;
+	struct wlr_scene_surface *scene_surface;
+	struct wl_listener node_destroy;
+	bool seen;
+};
+
 struct wex_thumbnail_entry {
 	struct wl_list link; /* manager->thumbnails */
 	struct wex_window_manager *manager;
 	struct wex_window *dest_win;
 	struct wex_window *src_win;
-	struct wlr_scene_surface *scene_surface;
-	struct wl_listener node_destroy;
+	struct wl_list mirrors; /* struct wex_thumb_mirror.link */
 	struct wl_listener dest_commit;
 	struct wl_listener src_commit;
 
@@ -1538,10 +1545,129 @@ thumbnail_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, doubl
 	return false;
 }
 
+/* Local re-implementation of the wex-scene.c helper (kept distinct by name):
+ * find the scene buffer node that displays the given surface. */
+static struct wlr_scene_buffer *
+thumbnail_find_surface_buffer(struct wlr_scene_node *node, struct wlr_surface *surface)
+{
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
+		struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+		return scene_surface && scene_surface->surface == surface ? buffer : NULL;
+	}
+	if (node->type != WLR_SCENE_NODE_TREE) {
+		return NULL;
+	}
+	struct wlr_scene_node *child;
+	wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link) {
+		struct wlr_scene_buffer *found = thumbnail_find_surface_buffer(child, surface);
+		if (found) {
+			return found;
+		}
+	}
+	return NULL;
+}
+
+/* Recurse depth-first in child order (bottom-to-top = paint order) and append
+ * every scene surface. The enabled flag is ignored so that a minimized or
+ * corner-clipped source is still mirrored; the corner and thumbnail trees are
+ * skipped. A hosted native's scene tree is a child of the frame's scene tree
+ * (see wex_scene_create), so it is covered by this walk. */
+static void
+thumbnail_collect(struct wlr_scene_node *node, struct wex_window *src_win, struct wl_array *out)
+{
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
+		struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+		if (scene_surface) {
+			struct wlr_scene_surface **slot = wl_array_add(out, sizeof(*slot));
+			*slot = scene_surface;
+		}
+		return;
+	}
+	if (node->type != WLR_SCENE_NODE_TREE) {
+		return;
+	}
+	struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+	if (tree == src_win->corner_tree || tree == src_win->thumbnail_tree) {
+		return;
+	}
+	struct wlr_scene_node *child;
+	wl_list_for_each(child, &tree->children, link) {
+		thumbnail_collect(child, src_win, out);
+	}
+}
+
+/* Compute the buffer source box for a sub-rect (x, y, w, h) of an arbitrary
+ * surface's logical area, accounting for the surface transform. */
+static void
+thumbnail_source_box(struct wlr_surface *surface, double x, double y, double w, double h,
+		struct wlr_fbox *out)
+{
+	struct wlr_fbox source;
+	wlr_surface_get_buffer_source_box(surface, &source);
+	int bwidth = surface->current.buffer_width;
+	int bheight = surface->current.buffer_height;
+	wlr_fbox_transform(&source, &source, surface->current.transform, bwidth, bheight);
+	wlr_output_transform_coords(surface->current.transform, &bwidth, &bheight);
+	double sw = source.width, sh = source.height;
+	source.x += x * sw / surface->current.width;
+	source.y += y * sh / surface->current.height;
+	source.width = w * sw / surface->current.width;
+	source.height = h * sh / surface->current.height;
+	wlr_fbox_transform(&source, &source, wlr_output_transform_invert(surface->current.transform),
+		bwidth, bheight);
+	*out = source;
+}
+
+static void
+handle_mirror_node_destroy(struct wl_listener *listener, void *data)
+{
+	struct wex_thumb_mirror *mirror = wl_container_of(listener, mirror, node_destroy);
+	wl_list_remove(&mirror->link);
+	free(mirror);
+}
+
+static struct wex_thumb_mirror *
+thumbnail_mirror_get(struct wex_thumbnail_entry *entry, struct wlr_surface *surface)
+{
+	struct wex_thumb_mirror *mirror;
+	wl_list_for_each(mirror, &entry->mirrors, link) {
+		if (mirror->surface == surface) {
+			return mirror;
+		}
+	}
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_create(entry->dest_win->thumbnail_tree, surface);
+	if (!scene_surface) {
+		return NULL;
+	}
+	mirror = znew(*mirror);
+	if (!mirror) {
+		wlr_scene_node_destroy(&scene_surface->buffer->node);
+		return NULL;
+	}
+	mirror->surface = surface;
+	mirror->scene_surface = scene_surface;
+	mirror->node_destroy.notify = handle_mirror_node_destroy;
+	wl_signal_add(&scene_surface->buffer->node.events.destroy, &mirror->node_destroy);
+	wl_list_insert(&entry->mirrors, &mirror->link);
+	return mirror;
+}
+
+static void
+thumbnail_entry_disable_all(struct wex_thumbnail_entry *entry)
+{
+	struct wex_thumb_mirror *mirror;
+	wl_list_for_each(mirror, &entry->mirrors, link) {
+		wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+	}
+}
+
 static void
 apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 {
-	if (!entry || !entry->scene_surface || !entry->dest_win || !entry->dest_win->view ||
+	if (!entry || !entry->dest_win || !entry->dest_win->view ||
 	    !entry->dest_win->view->surface || !entry->src_win || !entry->src_win->view ||
 	    !entry->src_win->view->surface) {
 		return;
@@ -1551,7 +1677,7 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 	struct wlr_surface *src_surf = entry->src_win->view->surface;
 
 	if (!wlr_surface_has_buffer(src_surf) || src_surf->current.width <= 0 || src_surf->current.height <= 0) {
-		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		thumbnail_entry_disable_all(entry);
 		return;
 	}
 
@@ -1561,7 +1687,7 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 	int dest_w = entry->dest_rect[2] - entry->dest_rect[0];
 	int dest_h = entry->dest_rect[3] - entry->dest_rect[1];
 	if (dest_w <= 0 || dest_h <= 0) {
-		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		thumbnail_entry_disable_all(entry);
 		return;
 	}
 
@@ -1576,53 +1702,121 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		src_h = entry->src_rect[3] - entry->src_rect[1];
 	}
 	if (src_w <= 0 || src_h <= 0) {
-		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+		thumbnail_entry_disable_all(entry);
 		return;
 	}
 
-	int cl_dest_left = entry->dest_rect[0] < 0 ? 0 : entry->dest_rect[0];
-	int cl_dest_top = entry->dest_rect[1] < 0 ? 0 : entry->dest_rect[1];
-	int cl_dest_right = entry->dest_rect[2] > dw_total ? dw_total : entry->dest_rect[2];
-	int cl_dest_bottom = entry->dest_rect[3] > dh_total ? dh_total : entry->dest_rect[3];
-	int cl_dest_w = cl_dest_right - cl_dest_left;
-	int cl_dest_h = cl_dest_bottom - cl_dest_top;
-	if (cl_dest_w <= 0 || cl_dest_h <= 0) {
-		wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, false);
+	struct wlr_box S = { src_x, src_y, src_w, src_h };
+
+	struct wlr_scene_buffer *root_buffer =
+		thumbnail_find_surface_buffer(&entry->src_win->view->scene_tree->node, src_surf);
+	if (!root_buffer) {
+		thumbnail_entry_disable_all(entry);
 		return;
 	}
+	int ox, oy;
+	wlr_scene_node_coords(&root_buffer->node, &ox, &oy);
 
-	double scale_x = (double)src_w / (double)dest_w;
-	double scale_y = (double)src_h / (double)dest_h;
-	double sbox_x = src_x + (cl_dest_left - entry->dest_rect[0]) * scale_x;
-	double sbox_y = src_y + (cl_dest_top - entry->dest_rect[1]) * scale_y;
-	double sbox_w = cl_dest_w * scale_x;
-	double sbox_h = cl_dest_h * scale_y;
+	struct wl_array surfaces;
+	wl_array_init(&surfaces);
+	thumbnail_collect(&entry->src_win->view->scene_tree->node, entry->src_win, &surfaces);
 
-	struct wlr_fbox source;
-	wlr_surface_get_buffer_source_box(src_surf, &source);
-	int bwidth = src_surf->current.buffer_width;
-	int bheight = src_surf->current.buffer_height;
-	wlr_fbox_transform(&source, &source, src_surf->current.transform, bwidth, bheight);
-	wlr_output_transform_coords(src_surf->current.transform, &bwidth, &bheight);
-	double sw = source.width, sh = source.height;
-	source.x += sbox_x * sw / src_surf->current.width;
-	source.y += sbox_y * sh / src_surf->current.height;
-	source.width = sbox_w * sw / src_surf->current.width;
-	source.height = sbox_h * sh / src_surf->current.height;
-	wlr_fbox_transform(&source, &source, wlr_output_transform_invert(src_surf->current.transform), bwidth, bheight);
+	struct wex_thumb_mirror *mirror;
+	wl_list_for_each(mirror, &entry->mirrors, link) {
+		mirror->seen = false;
+	}
 
-	wlr_scene_buffer_set_source_box(entry->scene_surface->buffer, &source);
-	wlr_scene_buffer_set_dest_size(entry->scene_surface->buffer, cl_dest_w, cl_dest_h);
-	wlr_scene_node_set_position(&entry->scene_surface->buffer->node, cl_dest_left, cl_dest_top);
-
+	double sx = (double)dest_w / (double)src_w;
+	double sy = (double)dest_h / (double)src_h;
 	uint32_t op = entry->opacity > 255 ? 255 : entry->opacity;
-	wlr_scene_buffer_set_opacity(entry->scene_surface->buffer, (float)op / 255.0f);
-	entry->scene_surface->buffer->point_accepts_input = thumbnail_point_accepts_input;
-	wlr_scene_node_set_enabled(&entry->scene_surface->buffer->node, true);
 
-	if (entry->dest_win->view->output) {
-		wlr_output_schedule_frame(entry->dest_win->view->output->wlr_output);
+	struct wlr_scene_surface **ss;
+	struct wex_thumb_mirror *prev_mirror = NULL;
+	wl_array_for_each(ss, &surfaces) {
+		struct wlr_scene_surface *s = *ss;
+		struct wlr_surface *W = s->surface;
+
+		mirror = thumbnail_mirror_get(entry, W);
+		if (!mirror) {
+			continue;
+		}
+		mirror->seen = true;
+
+		/* Keep the mirrors in paint order (bottom-to-top). */
+		if (prev_mirror) {
+			wlr_scene_node_place_above(&mirror->scene_surface->buffer->node,
+				&prev_mirror->scene_surface->buffer->node);
+		}
+		prev_mirror = mirror;
+
+		if (!wlr_surface_has_buffer(W) || W->current.width <= 0 || W->current.height <= 0) {
+			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			continue;
+		}
+
+		int bx, by;
+		wlr_scene_node_coords(&s->buffer->node, &bx, &by);
+		struct wlr_box R = { bx - ox, by - oy, W->current.width, W->current.height };
+
+		struct wlr_box inter;
+		if (!wlr_box_intersection(&inter, &R, &S)) {
+			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			continue;
+		}
+
+		double P_x = entry->dest_rect[0] + (inter.x - src_x) * sx;
+		double P_y = entry->dest_rect[1] + (inter.y - src_y) * sy;
+		double P_w = inter.width * sx;
+		double P_h = inter.height * sy;
+
+		double cl_left = P_x < 0 ? 0 : P_x;
+		double cl_top = P_y < 0 ? 0 : P_y;
+		double cl_right = P_x + P_w > dw_total ? dw_total : P_x + P_w;
+		double cl_bottom = P_y + P_h > dh_total ? dh_total : P_y + P_h;
+		double cl_w = cl_right - cl_left;
+		double cl_h = cl_bottom - cl_top;
+		if (cl_w <= 0 || cl_h <= 0) {
+			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			continue;
+		}
+
+		int dest_size_w = (int)(cl_w + 0.5);
+		if (dest_size_w < 1) dest_size_w = 1;
+		int dest_size_h = (int)(cl_h + 0.5);
+		if (dest_size_h < 1) dest_size_h = 1;
+		int pos_x = (int)(cl_left + 0.5);
+		int pos_y = (int)(cl_top + 0.5);
+
+		double sub_x = src_x + (cl_left - entry->dest_rect[0]) / sx - R.x;
+		double sub_y = src_y + (cl_top - entry->dest_rect[1]) / sy - R.y;
+		double sub_w = cl_w / sx;
+		double sub_h = cl_h / sy;
+
+		struct wlr_fbox source;
+		thumbnail_source_box(W, sub_x, sub_y, sub_w, sub_h, &source);
+
+		wlr_scene_buffer_set_source_box(mirror->scene_surface->buffer, &source);
+		wlr_scene_buffer_set_dest_size(mirror->scene_surface->buffer, dest_size_w, dest_size_h);
+		wlr_scene_node_set_position(&mirror->scene_surface->buffer->node, pos_x, pos_y);
+		wlr_scene_buffer_set_opacity(mirror->scene_surface->buffer, (float)op / 255.0f);
+		mirror->scene_surface->buffer->point_accepts_input = thumbnail_point_accepts_input;
+		wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, true);
 	}
+
+	struct wex_thumb_mirror *mirror_tmp;
+	wl_list_for_each_safe(mirror, mirror_tmp, &entry->mirrors, link) {
+		if (!mirror->seen) {
+			if (mirror->node_destroy.link.prev) {
+				wl_list_remove(&mirror->node_destroy.link);
+				wl_list_init(&mirror->node_destroy.link);
+			}
+			wlr_scene_node_destroy(&mirror->scene_surface->buffer->node);
+			wl_list_remove(&mirror->link);
+			free(mirror);
+		}
+	}
+
+	wl_array_release(&surfaces);
 }
 
 static void
@@ -1637,13 +1831,17 @@ thumbnail_entry_destroy(struct wex_thumbnail_entry *entry)
 		wl_list_remove(&entry->src_commit.link);
 		wl_list_init(&entry->src_commit.link);
 	}
-	if (entry->node_destroy.link.prev) {
-		wl_list_remove(&entry->node_destroy.link);
-		wl_list_init(&entry->node_destroy.link);
-	}
-	if (entry->scene_surface) {
-		wlr_scene_node_destroy(&entry->scene_surface->buffer->node);
-		entry->scene_surface = NULL;
+	struct wex_thumb_mirror *mirror, *mirror_tmp;
+	wl_list_for_each_safe(mirror, mirror_tmp, &entry->mirrors, link) {
+		if (mirror->node_destroy.link.prev) {
+			wl_list_remove(&mirror->node_destroy.link);
+			wl_list_init(&mirror->node_destroy.link);
+		}
+		if (mirror->scene_surface) {
+			wlr_scene_node_destroy(&mirror->scene_surface->buffer->node);
+		}
+		wl_list_remove(&mirror->link);
+		free(mirror);
 	}
 	wl_list_remove(&entry->link);
 	free(entry);
@@ -1699,14 +1897,6 @@ handle_thumbnail_dest_commit(struct wl_listener *listener, void *data)
 		wlr_scene_node_set_position(&entry->dest_win->thumbnail_tree->node, -geom.x, -geom.y);
 	}
 	apply_thumbnail_geometry(entry);
-}
-
-static void
-handle_thumbnail_node_destroy(struct wl_listener *listener, void *data)
-{
-	struct wex_thumbnail_entry *entry = wl_container_of(listener, entry, node_destroy);
-	entry->scene_surface = NULL;
-	thumbnail_entry_destroy(entry);
 }
 
 static void
@@ -1784,22 +1974,15 @@ handle_manager_set_thumbnails(struct wl_client *client,
 			wlr_scene_node_set_position(&dest_win->thumbnail_tree->node, -geom.x, -geom.y);
 		}
 
-		struct wlr_scene_surface *scene_surface =
-			wlr_scene_surface_create(dest_win->thumbnail_tree, src_win->view->surface);
-		if (!scene_surface) continue;
-
 		struct wex_thumbnail_entry *entry = znew(*entry);
 		entry->manager = manager;
 		entry->dest_win = dest_win;
 		entry->src_win = src_win;
-		entry->scene_surface = scene_surface;
+		wl_list_init(&entry->mirrors);
 		entry->flags = rec->flags;
 		entry->opacity = rec->opacity;
 		memcpy(entry->dest_rect, rec->dest_rect, sizeof(entry->dest_rect));
 		memcpy(entry->src_rect, rec->source_rect, sizeof(entry->src_rect));
-
-		entry->node_destroy.notify = handle_thumbnail_node_destroy;
-		wl_signal_add(&scene_surface->buffer->node.events.destroy, &entry->node_destroy);
 
 		wl_list_init(&entry->dest_commit.link);
 		entry->dest_commit.notify = handle_thumbnail_dest_commit;
@@ -1954,6 +2137,18 @@ handle_manager_resource_destroy(struct wl_listener *listener, void *data)
 }
 
 void
+wex_window_manager_refresh_thumbnails(struct wex_window_manager *manager)
+{
+	if (!manager) {
+		return;
+	}
+	struct wex_thumbnail_entry *entry;
+	wl_list_for_each(entry, &manager->thumbnails, link) {
+		apply_thumbnail_geometry(entry);
+	}
+}
+
+void
 wex_window_manager_on_output_commit(struct wex_window_manager *manager, const struct timespec *when)
 {
 	if (!manager || wl_list_empty(&manager->manager_resources)) {
@@ -1971,6 +2166,12 @@ wex_window_manager_on_output_commit(struct wex_window_manager *manager, const st
 	if (!has_v14) {
 		return;
 	}
+
+	/* Refresh the live thumbnails before emitting the frame event so that
+	 * commits of subsurfaces and hosted natives (whose surfaces the entries
+	 * do not listen to) are picked up. Identical geometry causes no scene
+	 * changes, so this cannot loop. */
+	wex_window_manager_refresh_thumbnails(manager);
 
 	struct timespec now = {0};
 	if (when) {

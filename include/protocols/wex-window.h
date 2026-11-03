@@ -77,6 +77,7 @@ void wex_window_drop_thumbnails(struct wex_window *win);
 /* when: the display time of a present event, NULL for the time of the commit */
 void wex_window_manager_on_output_commit(struct wex_window_manager *manager, const struct timespec *when);
 void wex_window_manager_on_view_map(struct view *view);
+void wex_window_manager_refresh_thumbnails(struct wex_window_manager *manager);
 
 void wex_window_manager_init(struct server *server);
 void wex_window_manager_finish(struct server *server);
