@@ -1353,6 +1353,169 @@ test_frame(const char *socket_name)
 	return 0;
 }
 
+static int
+test_idle(const char *socket_name)
+{
+	printf("[corner-client] running idle frame pacing test (checks zero commits over ~1s idle)...\n");
+
+	struct wex_context ctx;
+	if (!wex_context_init(&ctx, socket_name)) {
+		fprintf(stderr, "failed to init wex_context on '%s'\n", socket_name);
+		return 1;
+	}
+	if (!ctx.wex_window_manager) {
+		fprintf(stderr, "wex_window_manager not available\n");
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	struct frame_stats stats = {0};
+	wex_window_manager_v1_add_listener(ctx.wex_window_manager, &frame_listener, &stats);
+
+	/* Map source window A (red, 200x200) and dest window B (navy, 400x400) */
+	char handle_A[33] = {0};
+	struct wex_window_obj win_A;
+	if (!wex_window_init(&win_A, &ctx, "IdleSrcA", 200, 200, 0xFFFF0000)) return 1;
+	win_A.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_A.xdg_toplevel);
+	wex_window_v1_add_listener(win_A.wex_win, &capture_listener, handle_A);
+	wex_window_v1_set_layer(win_A.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	wl_surface_commit(win_A.surface);
+
+	char handle_B[33] = {0};
+	struct wex_window_obj win_B;
+	if (!wex_window_init(&win_B, &ctx, "IdleDestB", 400, 400, 0xFF112233)) return 1;
+	win_B.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager, win_B.xdg_toplevel);
+	wex_window_v1_add_listener(win_B.wex_win, &capture_listener, handle_B);
+	wex_window_v1_set_layer(win_B.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	wl_surface_commit(win_B.surface);
+
+	wl_display_roundtrip(ctx.display);
+	wex_window_commit_buffer(&win_A);
+	wex_window_commit_buffer(&win_B);
+	wl_display_roundtrip(ctx.display);
+
+	/* Configure thumbnail on B showing source A */
+	struct wex_thumbnail_record rec = {0};
+	memcpy(rec.dest, handle_B, 32);
+	memcpy(rec.src, handle_A, 32);
+	rec.flags = WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_VISIBLE;
+	rec.opacity = 255;
+	rec.dest_rect[0] = 50; rec.dest_rect[1] = 50;
+	rec.dest_rect[2] = 150; rec.dest_rect[3] = 150;
+
+	struct wl_array arr;
+	wl_array_init(&arr);
+	void *p = wl_array_add(&arr, sizeof(rec));
+	memcpy(p, &rec, sizeof(rec));
+	wex_window_manager_v1_set_thumbnails(ctx.wex_window_manager, &arr);
+	wl_array_release(&arr);
+	wl_display_roundtrip(ctx.display);
+
+	/* Wait 100ms for initial setup commits to settle */
+	usleep(100000);
+	wl_display_roundtrip(ctx.display);
+
+	unsigned initial_count = stats.count;
+	printf("[corner-client] settled frame count: %u; monitoring idle for 1.0s...\n", initial_count);
+
+	/* Sleep ~1.0 second, polling Wayland display roundtrips */
+	for (int i = 0; i < 20; i++) {
+		usleep(50000);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	unsigned commits_during_idle = stats.count - initial_count;
+	if (commits_during_idle != 0) {
+		fprintf(stderr, "ERROR: compositor busy-rendered %u frames over 1.0s while completely idle!\n",
+			commits_during_idle);
+		wex_window_finish(&win_A);
+		wex_window_finish(&win_B);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	printf("[corner-client] SUCCESS: 0 output commits detected over 1.0s idle window (no busy rendering)\n");
+
+	/* Now damage window A to verify frame scheduling still wakes up on damage */
+	printf("[corner-client] verifying frame scheduling wakes up on damage...\n");
+	uint32_t *pix = win_A.buffer.data;
+	for (int i = 0; i < 200 * 200; i++) pix[i] = 0xFF00FF00;
+	wl_surface_attach(win_A.surface, win_A.buffer.wl_buffer, 0, 0);
+	wl_surface_damage_buffer(win_A.surface, 0, 0, 200, 200);
+	wl_surface_commit(win_A.surface);
+	wl_display_flush(ctx.display);
+
+	for (int i = 0; i < 50 && stats.count == initial_count; i++) {
+		usleep(20000);
+		wl_display_roundtrip(ctx.display);
+	}
+
+	if (stats.count <= initial_count) {
+		fprintf(stderr, "ERROR: compositor failed to schedule a frame after surface damage\n");
+		wex_window_finish(&win_A);
+		wex_window_finish(&win_B);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+
+	printf("[corner-client] SUCCESS: damage woke compositor; new frame count %u (was %u)\n",
+		stats.count, initial_count);
+
+	wex_window_finish(&win_A);
+	wex_window_finish(&win_B);
+	wex_context_finish(&ctx);
+	return 0;
+}
+
+static void
+content_type_registry_handle_global(void *data, struct wl_registry *registry,
+	uint32_t name, const char *interface, uint32_t version)
+{
+	(void)registry;
+	(void)name;
+	bool *found = data;
+	if (strcmp(interface, "wp_content_type_manager_v1") == 0) {
+		printf("[corner-client] found global %s version %u\n", interface, version);
+		*found = true;
+	}
+}
+
+static const struct wl_registry_listener content_type_registry_listener = {
+	.global = content_type_registry_handle_global,
+	.global_remove = registry_handle_global_remove,
+};
+
+static int
+test_content_type(const char *normal_socket)
+{
+	printf("[corner-client] checking wp_content_type_manager_v1 on '%s'...\n",
+		normal_socket ? normal_socket : "default");
+
+	struct wl_display *display = wl_display_connect(normal_socket);
+	if (!display) {
+		fprintf(stderr, "failed to connect to socket '%s'\n", normal_socket ? normal_socket : "default");
+		return 1;
+	}
+
+	struct wl_registry *registry = wl_display_get_registry(display);
+	bool found = false;
+	wl_registry_add_listener(registry, &content_type_registry_listener, &found);
+	wl_display_roundtrip(display);
+
+	if (!found) {
+		fprintf(stderr, "ERROR: wp_content_type_manager_v1 global not advertised on '%s'\n",
+			normal_socket ? normal_socket : "default");
+		wl_registry_destroy(registry);
+		wl_display_disconnect(display);
+		return 1;
+	}
+
+	printf("[corner-client] SUCCESS: wp_content_type_manager_v1 advertised and available\n");
+	wl_registry_destroy(registry);
+	wl_display_disconnect(display);
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1396,6 +1559,10 @@ main(int argc, char **argv)
 		return test_peek(socket_name, barrier_dir);
 	} else if (strcmp(scenario, "frame") == 0) {
 		return test_frame(socket_name);
+	} else if (strcmp(scenario, "idle") == 0) {
+		return test_idle(socket_name);
+	} else if (strcmp(scenario, "content-type") == 0) {
+		return test_content_type(normal_socket);
 	} else {
 		fprintf(stderr, "Unknown scenario '%s'\n", scenario);
 		return 1;

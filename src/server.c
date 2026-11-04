@@ -56,6 +56,7 @@ int drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_security_context_v1.h>
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
+#include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/types/wlr_xdg_foreign_registry.h>
@@ -747,6 +748,8 @@ server_init(struct server *server)
 	wlr_data_control_manager_v1_create(server->wl_display);
 	server->security_context_manager_v1 =
 		wlr_security_context_manager_v1_create(server->wl_display);
+	server->content_type_manager_v1 =
+		wlr_content_type_manager_v1_create(server->wl_display, 1);
 	wlr_viewporter_create(server->wl_display);
 	wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
 	wlr_fractional_scale_manager_v1_create(server->wl_display,

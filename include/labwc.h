@@ -396,6 +396,7 @@ struct server {
 
 	struct wlr_tablet_manager_v2 *tablet_manager;
 	struct wlr_security_context_manager_v1 *security_context_manager_v1;
+	struct wlr_content_type_manager_v1 *content_type_manager_v1;
 
 	/* Set when in cycle (alt-tab) mode */
 	struct osd_state {
@@ -441,6 +442,9 @@ struct output {
 	struct wl_listener commit;
 	struct wl_listener present;
 	bool present_seen; /* the backend reports presents: frame events use their time */
+	struct timespec last_presentation;
+	uint32_t refresh_nsec;
+	struct wl_event_source *repaint_timer;
 
 	bool leased;
 	bool gamma_lut_changed;

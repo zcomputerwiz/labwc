@@ -306,6 +306,14 @@ run_check "Thumbnail Subsurface: Green subsurface centre (600, 300) and red corn
 run_check "Thumbnail Subsurface Moved: Green centre follows to (500, 200), old area (700, 400) red" \
     python3 "$SCRIPT_DIR/verify.py" check-thumb-subsurface "$OUT_DIR/27_thumb_sub_moved.png" 500 200 700 400 5
 
+# TEST 25: Frame pacing: verify 0 commits occur over ~1s when idle
+run_check "Frame Pacing: Zero output commits when idle over ~1s" \
+    "$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario idle
+
+# TEST 26: wp_content_type_v1 global advertisement
+run_check "Content Type: wp_content_type_v1 global advertised" \
+    "$SCRIPT_DIR/corner-client" --normal-socket wayland-0 --scenario content-type
+
 echo "=========================================================="
 echo " ALL TESTS PASSED SUCCESSFULLY ($TESTS_PASSED/$TESTS_PASSED)"
 echo " Screenshots saved in: $OUT_DIR"

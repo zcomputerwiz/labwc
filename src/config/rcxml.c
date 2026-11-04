@@ -1048,6 +1048,11 @@ entry(xmlNode *node, char *nodename, char *content, struct parser_state *state)
 		set_adaptive_sync_mode(content, &rc.adaptive_sync);
 	} else if (!strcasecmp(nodename, "allowTearing.core")) {
 		set_tearing_mode(content, &rc.allow_tearing);
+	} else if (!strcasecmp(nodename, "maxRenderTime.core")) {
+		rc.max_render_time = atoi(content);
+		if (rc.max_render_time < 0) {
+			rc.max_render_time = 0;
+		}
 	} else if (!strcasecmp(nodename, "autoEnableOutputs.core")) {
 		set_bool(content, &rc.auto_enable_outputs);
 	} else if (!strcasecmp(nodename, "reuseOutputMode.core")) {
@@ -1444,6 +1449,7 @@ rcxml_init(void)
 	rc.gap = 0;
 	rc.adaptive_sync = LAB_ADAPTIVE_SYNC_DISABLED;
 	rc.allow_tearing = false;
+	rc.max_render_time = 0;
 	rc.auto_enable_outputs = true;
 	rc.reuse_output_mode = false;
 

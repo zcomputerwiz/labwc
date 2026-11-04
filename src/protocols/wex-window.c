@@ -1024,6 +1024,28 @@ drop_effects(struct wex_window *win)
 	}
 }
 
+/* The shared Mica blur node blurs the whole desktop layer while it exists: drop it when no window shows Mica. */
+static void
+mica_blur_release_if_unused(struct wex_window_manager *manager)
+{
+#if HAVE_SCENEFX
+	struct server *server = manager->server;
+	struct wex_window *win;
+	if (!server->mica_blur) {
+		return;
+	}
+	wl_list_for_each(win, &manager->windows, link) {
+		if (win->backdrop_tree && win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+			return;
+		}
+	}
+	wlr_scene_node_destroy(&server->mica_blur->node);
+	server->mica_blur = NULL;
+#else
+	(void)manager;
+#endif
+}
+
 static size_t
 compute_corner_slices(int width, int height, int r, struct wlr_box slices[65])
 {
@@ -1430,6 +1452,7 @@ wex_window_update_effects(struct wex_window *win)
 		}
 	}
 
+	mica_blur_release_if_unused(win->manager);
 	if (win->view->output) {
 		wlr_output_schedule_frame(win->view->output->wlr_output);
 	}
@@ -1618,7 +1641,9 @@ thumbnail_collect(struct wlr_scene_node *node, struct wex_window *src_win, struc
 		struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
 		if (scene_surface) {
 			struct wlr_scene_surface **slot = wl_array_add(out, sizeof(*slot));
-			*slot = scene_surface;
+			if (slot) {
+				*slot = scene_surface;
+			}
 		}
 		return;
 	}
@@ -1697,7 +1722,10 @@ thumbnail_entry_disable_all(struct wex_thumbnail_entry *entry)
 {
 	struct wex_thumb_mirror *mirror;
 	wl_list_for_each(mirror, &entry->mirrors, link) {
-		wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+		if (mirror->scene_surface && mirror->scene_surface->buffer &&
+		    mirror->scene_surface->buffer->node.enabled) {
+			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+		}
 	}
 }
 
@@ -1787,7 +1815,9 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		prev_mirror = mirror;
 
 		if (!wlr_surface_has_buffer(W) || W->current.width <= 0 || W->current.height <= 0) {
-			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			if (mirror->scene_surface->buffer->node.enabled) {
+				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			}
 			continue;
 		}
 
@@ -1797,7 +1827,9 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 
 		struct wlr_box inter;
 		if (!wlr_box_intersection(&inter, &R, &S)) {
-			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			if (mirror->scene_surface->buffer->node.enabled) {
+				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			}
 			continue;
 		}
 
@@ -1813,7 +1845,9 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		double cl_w = cl_right - cl_left;
 		double cl_h = cl_bottom - cl_top;
 		if (cl_w <= 0 || cl_h <= 0) {
-			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			if (mirror->scene_surface->buffer->node.enabled) {
+				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+			}
 			continue;
 		}
 
@@ -1831,13 +1865,25 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 
 		struct wlr_fbox source;
 		thumbnail_source_box(W, sub_x, sub_y, sub_w, sub_h, &source);
+		float opacity = (float)op / 255.0f;
 
-		wlr_scene_buffer_set_source_box(mirror->scene_surface->buffer, &source);
-		wlr_scene_buffer_set_dest_size(mirror->scene_surface->buffer, dest_size_w, dest_size_h);
-		wlr_scene_node_set_position(&mirror->scene_surface->buffer->node, pos_x, pos_y);
-		wlr_scene_buffer_set_opacity(mirror->scene_surface->buffer, (float)op / 255.0f);
+		struct wlr_scene_buffer *sb = mirror->scene_surface->buffer;
+		if (sb->dst_width != dest_size_w || sb->dst_height != dest_size_h) {
+			wlr_scene_buffer_set_dest_size(sb, dest_size_w, dest_size_h);
+		}
+		if (sb->node.x != pos_x || sb->node.y != pos_y) {
+			wlr_scene_node_set_position(&sb->node, pos_x, pos_y);
+		}
+		if (!wlr_fbox_equal(&sb->src_box, &source)) {
+			wlr_scene_buffer_set_source_box(sb, &source);
+		}
+		if (sb->opacity != opacity) {
+			wlr_scene_buffer_set_opacity(sb, opacity);
+		}
 		mirror->scene_surface->buffer->point_accepts_input = thumbnail_point_accepts_input;
-		wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, true);
+		if (!sb->node.enabled) {
+			wlr_scene_node_set_enabled(&sb->node, true);
+		}
 	}
 
 	struct wex_thumb_mirror *mirror_tmp;
@@ -2273,8 +2319,10 @@ wex_window_resource_destroy(struct wl_resource *resource)
 		if (win->view) {
 			win->view->wex_window = NULL;
 		}
+		struct wex_window_manager *manager = win->manager;
 		wl_list_remove(&win->link);
 		free(win);
+		mica_blur_release_if_unused(manager);
 	}
 }
 
@@ -2294,6 +2342,7 @@ wex_window_on_view_destroy(struct wex_window *win)
 	wex_window_drop_thumbnails(win);
 	release_foreign_association(win, false);
 	win->view = NULL;
+	mica_blur_release_if_unused(win->manager);
 }
 
 static void

@@ -106,13 +106,8 @@ output_apply_gamma(struct output *output)
 }
 
 static void
-output_frame_notify(struct wl_listener *listener, void *data)
+output_render(struct output *output)
 {
-	/*
-	 * This function is called every time an output is ready to display a
-	 * frame - which is typically at 60 Hz.
-	 */
-	struct output *output = wl_container_of(listener, output, frame);
 	if (!output_is_usable(output)) {
 		return;
 	}
@@ -158,6 +153,67 @@ output_frame_notify(struct wl_listener *listener, void *data)
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
 }
 
+static int
+output_repaint_timer_handler(void *data)
+{
+	struct output *output = data;
+	output_render(output);
+	return 0;
+}
+
+static void
+output_frame_notify(struct wl_listener *listener, void *data)
+{
+	/*
+	 * This function is called every time an output is ready to display a
+	 * frame - which is typically at 60 Hz.
+	 */
+	struct output *output = wl_container_of(listener, output, frame);
+	if (!output_is_usable(output)) {
+		return;
+	}
+
+	if (output->server->session && !output->server->session->active) {
+		return;
+	}
+
+	if (!output->scene_output) {
+		wlr_log(WLR_INFO, "Failed to render new frame: no scene-output");
+		return;
+	}
+
+	int msec_until_refresh = 0;
+	if (rc.max_render_time > 0 && output->refresh_nsec > 0 && output->last_presentation.tv_sec > 0) {
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		const long NSEC_IN_SECONDS = 1000000000L;
+		struct timespec predicted_refresh = output->last_presentation;
+		predicted_refresh.tv_nsec += output->refresh_nsec % NSEC_IN_SECONDS;
+		predicted_refresh.tv_sec += output->refresh_nsec / NSEC_IN_SECONDS;
+		if (predicted_refresh.tv_nsec >= NSEC_IN_SECONDS) {
+			predicted_refresh.tv_sec += 1;
+			predicted_refresh.tv_nsec -= NSEC_IN_SECONDS;
+		}
+
+		if (predicted_refresh.tv_sec > now.tv_sec ||
+		    (predicted_refresh.tv_sec == now.tv_sec && predicted_refresh.tv_nsec > now.tv_nsec)) {
+			long nsec_until_refresh =
+				(predicted_refresh.tv_sec - now.tv_sec) * NSEC_IN_SECONDS +
+				(predicted_refresh.tv_nsec - now.tv_nsec);
+			msec_until_refresh = (int)(nsec_until_refresh / 1000000L);
+		}
+	}
+
+	int delay = msec_until_refresh - rc.max_render_time;
+	if (delay < 1) {
+		output_render(output);
+	} else {
+		output->wlr_output->frame_pending = true;
+		wl_event_source_timer_update(output->repaint_timer, delay);
+	}
+}
+
 static void
 output_commit_notify(struct wl_listener *listener, void *data)
 {
@@ -169,6 +225,7 @@ output_commit_notify(struct wl_listener *listener, void *data)
 	/* once presents are reported the frame events follow them (display time), see output_present_notify */
 	if (!output->present_seen && !wl_list_empty(&server->outputs) &&
 			output == wl_container_of(server->outputs.next, output, link)) {
+		clock_gettime(CLOCK_MONOTONIC, &output->last_presentation);
 		wex_window_manager_on_output_commit(server->wex_window_manager, NULL);
 	}
 }
@@ -183,6 +240,10 @@ output_present_notify(struct wl_listener *listener, void *data)
 		return;
 	}
 	output->present_seen = true;
+	if (event->when) {
+		output->last_presentation = *event->when;
+	}
+	output->refresh_nsec = event->refresh;
 	if (!wl_list_empty(&server->outputs) &&
 			output == wl_container_of(server->outputs.next, output, link)) {
 		wex_window_manager_on_output_commit(server->wex_window_manager, event->when);
@@ -227,6 +288,11 @@ output_destroy_notify(struct wl_listener *listener, void *data)
 	}
 
 	wlr_output_state_finish(&output->pending);
+
+	if (output->repaint_timer) {
+		wl_event_source_remove(output->repaint_timer);
+		output->repaint_timer = NULL;
+	}
 
 	/*
 	 * Ensure that we don't accidentally try to dereference
@@ -523,6 +589,9 @@ new_output_notify(struct wl_listener *listener, void *data)
 	wl_signal_add(&wlr_output->events.commit, &output->commit);
 	output->present.notify = output_present_notify;
 	wl_signal_add(&wlr_output->events.present, &output->present);
+
+	output->repaint_timer = wl_event_loop_add_timer(server->wl_event_loop,
+		output_repaint_timer_handler, output);
 
 	wl_list_init(&output->regions);
 
