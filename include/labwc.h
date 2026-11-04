@@ -327,6 +327,10 @@ struct server {
 	struct lab_zone_manager *zone_manager;
 	struct wex_window_manager *wex_window_manager;
 	struct wlr_scene_tree *desktop_tree;
+#if HAVE_SCENEFX
+	/* cached blur of the desktop layer for Mica backdrops, created on first use */
+	struct wlr_scene_optimized_blur *mica_blur;
+#endif
 	struct wlr_scene_tree *shell_tree;
 	char *wex_socket_name;
 	const char *wex_native_socket_name; /* borrowed from wl_display */

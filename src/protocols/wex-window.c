@@ -1114,12 +1114,9 @@ compute_corner_slices(int width, int height, int r, struct wlr_box slices[65])
 static void
 compute_backdrop_color(uint32_t backdrop, uint32_t flags, uint32_t tint, float color[4])
 {
-	/* wlroots 0.18 scene does not provide a shader/render blur pass.
-	 * For blur, acrylic, and mica materials, we draw the material tint alone
-	 * behind translucent pixels for now. This provides a clean extension point
-	 * to integrate a post-process blur pass once shader/filter scene nodes
-	 * are supported.
-	 */
+	/* The tint remains a scene-agnostic fallback: SceneFX adds the blur behind
+	 * this rect when the optional renderer is active, while the default build
+	 * continues to draw tint only. */
 	float r, g, b, a;
 
 	if (flags & WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_TINT) {
@@ -1269,18 +1266,43 @@ wex_window_update_effects(struct wex_window *win)
 	bool blur_enabled = (server && server->fx_renderer && is_blur_kind);
 
 	if (blur_enabled && server->scene) {
-		/* One fixed scene-wide preset for all blur kinds (blur, acrylic, mica):
-		 * radius 5, 3 passes, defaults for the rest (docs/WAYLAND_BLUR.md).
-		 * The kinds differ only by their tint, which is already applied per
-		 * window. A per-kind preset here would let the last committing window
-		 * decide the blur for every window, so use a single preset.
-		 * wlr_scene_set_blur_data() is a no-op when the data is unchanged, so
-		 * this effectively sets the preset once. */
-		wlr_scene_set_blur_data(server->scene, blur_data_get_default());
+		/* SceneFX stores one blur_data in the scene, not in each blur node.
+		 * Keep the shared parameters at the Acrylic quality level; changing
+		 * this per window would make the last committing window affect every
+		 * other window. Mica is separated below by sampling from desktop_tree. */
+		wlr_scene_set_blur_data(server->scene, (struct blur_data) {
+			.num_passes = 4,
+			.radius = 12,
+			.noise = 0.03f,
+			.brightness = 0.85f,
+			.contrast = 1.0f,
+			.saturation = 1.25f,
+		});
 	}
 #endif
 
 	if (win->effects_backdrop != WEX_WINDOW_MANAGER_V1_BACKDROP_NONE && has_buffer) {
+#if HAVE_SCENEFX
+		if (blur_enabled && win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
+			/* Mica rects use the optimized blur: SceneFX draws the cached blur
+			 * of everything below this node, so it sits on top of desktop_tree
+			 * (wallpaper and desktop windows) and under every other view.
+			 * ponytail: refreshed when a Mica window updates, not on every
+			 * desktop-layer commit. */
+			struct wlr_box layout;
+			wlr_output_layout_get_box(server->output_layout, NULL, &layout);
+			if (!server->mica_blur) {
+				server->mica_blur = wlr_scene_optimized_blur_create(server->desktop_tree,
+					layout.width, layout.height);
+			} else {
+				wlr_scene_optimized_blur_set_size(server->mica_blur, layout.width, layout.height);
+			}
+			if (server->mica_blur) {
+				wlr_scene_node_set_position(&server->mica_blur->node, layout.x, layout.y);
+				wlr_scene_node_raise_to_top(&server->mica_blur->node);
+			}
+		}
+#endif
 		win->backdrop_tree = wlr_scene_tree_create(win->view->scene_tree);
 		if (win->backdrop_tree) {
 			wlr_scene_node_set_position(&win->backdrop_tree->node, -geometry.x, -geometry.y);

@@ -618,12 +618,35 @@ test_blur(const char *socket_name, const char *barrier_dir)
 	}
 	wl_surface_commit(bg_win.surface);
 
+	/* A normal window between the wallpaper and the glass. Acrylic/Blur may
+	 * sample it; Mica must not, because its optimized node lives in desktop_tree. */
+	struct wex_window_obj blocker_win;
+	if (!wex_window_init(&blocker_win, &ctx, "BlurBlockerWindow", 80, 80, 0xFFFF0000)) {
+		fprintf(stderr, "failed to create blocker_win\n");
+		wex_window_finish(&bg_win);
+		wex_context_finish(&ctx);
+		return 1;
+	}
+	blocker_win.wex_win = wex_window_manager_v1_get_window(ctx.wex_window_manager,
+		blocker_win.xdg_toplevel);
+	wex_window_v1_set_layer(blocker_win.wex_win, WEX_WINDOW_V1_LAYER_NORMAL);
+	if (zone) {
+		blocker_win.zone_item = xx_zone_manager_v1_get_zone_item(ctx.zone_manager,
+			blocker_win.xdg_toplevel);
+		xx_zone_v1_add_item(zone, blocker_win.zone_item);
+		xx_zone_item_v1_set_position(blocker_win.zone_item, 540, 320);
+	}
+	wl_surface_commit(blocker_win.surface);
+	wl_display_roundtrip(ctx.display); /* configure before the first buffer */
+	wex_window_commit_buffer(&blocker_win);
+
 	/* Foreground glass window: 400x300 at (440, 250) */
 	/* Screen x=640 corresponds to window x=200 */
 	/* Left half white with alpha 0x40 (premultiplied 0x40404040), right half black with alpha 0x40 (0x40000000) */
 	struct wex_window_obj fg_win;
 	if (!wex_window_init(&fg_win, &ctx, "FgBlurWindow", 400, 300, 0x00000000)) {
 		fprintf(stderr, "failed to create fg_win\n");
+		wex_window_finish(&blocker_win);
 		wex_window_finish(&bg_win);
 		wex_context_finish(&ctx);
 		return 1;
@@ -655,6 +678,7 @@ test_blur(const char *socket_name, const char *barrier_dir)
 	if (strlen(g_blur_handle) != 32) {
 		fprintf(stderr, "ERROR: invalid window handle received: '%s'\n", g_blur_handle);
 		wex_window_finish(&fg_win);
+		wex_window_finish(&blocker_win);
 		wex_window_finish(&bg_win);
 		if (zone) xx_zone_v1_destroy(zone);
 		wex_context_finish(&ctx);
@@ -687,7 +711,26 @@ test_blur(const char *socket_name, const char *barrier_dir)
 	wl_display_roundtrip(ctx.display);
 	barrier_signal_and_wait(barrier_dir, "b_blur_cleared", "b_blur_cleared_cont");
 
+	/* Step 4: Acrylic uses the shared strong/noisy/saturated SceneFX preset. */
+	printf("[corner-client] Step 4: backdrop ACRYLIC...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		0, WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC,
+		0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_acrylic", "b_blur_acrylic_cont");
+
+	/* Step 5: Mica is sampled from desktop_tree and must ignore blocker_win. */
+	printf("[corner-client] Step 5: backdrop MICA...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		0, WEX_WINDOW_MANAGER_V1_BACKDROP_MICA,
+		0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_mica", "b_blur_mica_cont");
+
 	wex_window_finish(&fg_win);
+	wex_window_finish(&blocker_win);
 	wex_window_finish(&bg_win);
 	if (zone) {
 		xx_zone_v1_destroy(zone);

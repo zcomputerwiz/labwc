@@ -134,6 +134,16 @@ for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_cleared" ]; then break; fi; s
 grim "$OUT_DIR/03_blur_cleared.png"
 touch "$BARRIER_DIR/b_blur_cleared_cont"
 
+# Step 4: Acrylic
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_acrylic" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/04_blur_acrylic.png"
+touch "$BARRIER_DIR/b_blur_acrylic_cont"
+
+# Step 5: Mica with a red normal window between the glass and wallpaper
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_mica" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/05_blur_mica.png"
+touch "$BARRIER_DIR/b_blur_mica_cont"
+
 wait "$BLUR_PID"
 
 echo "=========================================================="
@@ -178,6 +188,15 @@ run_check "Blur Cleared: Outside white pixel (635, 100) remains White" \
 
 run_check "Blur Cleared: Outside black pixel (645, 100) remains Black" \
     python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/03_blur_cleared.png" 645 100 000000 5
+
+run_check "Acrylic: capture uses a material distinct from plain Blur" \
+    bash -c '! python3 "$0" compare-images "$1" "$2" 0' "$SCRIPT_DIR/verify.py" "$OUT_DIR/02_blur_active.png" "$OUT_DIR/04_blur_acrylic.png"
+
+run_check "Mica: wallpaper sample keeps green channel high over red blocker" \
+    python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/05_blur_mica.png" 600 350 140 255 1
+
+run_check "Mica: wallpaper sample keeps blue channel high over red blocker" \
+    python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/05_blur_mica.png" 600 350 140 255 2
 
 echo "=========================================================="
 echo " All blur checks passed ($TESTS_PASSED/$((TESTS_PASSED + TESTS_FAILED)))"
