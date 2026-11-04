@@ -729,6 +729,15 @@ test_blur(const char *socket_name, const char *barrier_dir)
 	wl_display_roundtrip(ctx.display);
 	barrier_signal_and_wait(barrier_dir, "b_blur_mica", "b_blur_mica_cont");
 
+	/* Step 6: a new wallpaper must reach Mica's cached blur. */
+	printf("[corner-client] Step 6: wallpaper turns blue under MICA...\n");
+	for (int i = 0; i < 1280 * 800; i++) {
+		bg_px[i] = 0xFF0000FF;
+	}
+	wex_window_commit_buffer(&bg_win);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_wallpaper", "b_blur_wallpaper_cont");
+
 	wex_window_finish(&fg_win);
 	wex_window_finish(&blocker_win);
 	wex_window_finish(&bg_win);

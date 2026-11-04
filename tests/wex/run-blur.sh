@@ -144,6 +144,11 @@ for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_mica" ]; then break; fi; slee
 grim "$OUT_DIR/05_blur_mica.png"
 touch "$BARRIER_DIR/b_blur_mica_cont"
 
+# Step 6: new wallpaper under Mica
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_wallpaper" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/06_blur_mica_wallpaper.png"
+touch "$BARRIER_DIR/b_blur_wallpaper_cont"
+
 wait "$BLUR_PID"
 
 echo "=========================================================="
@@ -197,6 +202,12 @@ run_check "Mica: wallpaper sample keeps green channel high over red blocker" \
 
 run_check "Mica: wallpaper sample keeps blue channel high over red blocker" \
     python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/05_blur_mica.png" 600 350 140 255 2
+
+run_check "Mica: a blue wallpaper reaches the cached sample (blue channel)" \
+    python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/06_blur_mica_wallpaper.png" 600 350 150 255 2
+
+run_check "Mica: a blue wallpaper replaces the old white sample (red channel)" \
+    python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/06_blur_mica_wallpaper.png" 600 350 0 180 0
 
 echo "=========================================================="
 echo " All blur checks passed ($TESTS_PASSED/$((TESTS_PASSED + TESTS_FAILED)))"

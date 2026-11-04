@@ -472,6 +472,13 @@ handle_wex_window_set_layer(struct wl_client *client,
 	case WEX_WINDOW_V1_LAYER_DESKTOP:
 		wlr_scene_node_reparent(&win->view->scene_tree->node,
 			server->desktop_tree);
+#if HAVE_SCENEFX
+		/* Keep Mica's cached blur above every desktop window it samples. */
+		if (server->mica_blur) {
+			wlr_scene_node_raise_to_top(&server->mica_blur->node);
+			wlr_scene_optimized_blur_mark_dirty(server->mica_blur);
+		}
+#endif
 		view_set_ssd_mode(win->view, LAB_SSD_MODE_NONE);
 		break;
 	case WEX_WINDOW_V1_LAYER_SHELL:
@@ -1439,6 +1446,14 @@ handle_window_surface_commit(struct wl_listener *listener, void *data)
 {
 	struct wex_window *win = wl_container_of(listener, win, surface_commit);
 	wex_window_update_effects(win);
+#if HAVE_SCENEFX
+	/* New wallpaper or desktop pixels: Mica's cached blur samples them. */
+	struct server *server = win->manager->server;
+	if (server->mica_blur && win->view &&
+	    win->view->scene_tree->node.parent == server->desktop_tree) {
+		wlr_scene_optimized_blur_mark_dirty(server->mica_blur);
+	}
+#endif
 }
 
 static void
