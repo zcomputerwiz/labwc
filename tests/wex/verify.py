@@ -165,6 +165,62 @@ def compare_images(image1_path, image2_path, tolerance=0):
     print(f"PASS: Images match completely (tol={tolerance})")
     return True
 
+def check_corner_aa(image_path, x, y, bg_hex, fg_hex, min_edge_dist=15):
+    img = Image.open(image_path).convert('RGB')
+    if x < 0 or x >= img.width or y < 0 or y >= img.height:
+        print(f"FAIL: Pixel ({x}, {y}) outside image bounds {img.size}")
+        return False
+    c = img.getpixel((x, y))
+    bg = hex_to_rgb(bg_hex)
+    fg = hex_to_rgb(fg_hex)
+    d_bg = color_dist(c, bg)
+    d_fg = color_dist(c, fg)
+    if d_bg < min_edge_dist:
+        print(f"FAIL: Pixel at ({x},{y}) color {c} too close to background {bg} (dist={d_bg} < {min_edge_dist})")
+        return False
+    if d_fg < min_edge_dist:
+        print(f"FAIL: Pixel at ({x},{y}) color {c} too close to foreground {fg} (dist={d_fg} < {min_edge_dist})")
+        return False
+    for ch in range(3):
+        low = min(bg[ch], fg[ch]) - 5
+        high = max(bg[ch], fg[ch]) + 5
+        if c[ch] < low or c[ch] > high:
+            print(f"FAIL: Pixel at ({x},{y}) color {c} channel {ch} outside [{low}, {high}]")
+            return False
+    print(f"PASS: Pixel at ({x},{y}) color {c} has intermediate colour between {bg} and {fg} (d_bg={d_bg}, d_fg={d_fg})")
+    return True
+
+def check_shadow_falloff(image_path, start_x, start_y, length, axis='x', channel=2, min_diff=15, max_step=8):
+    img = Image.open(image_path).convert('RGB')
+    vals = []
+    for i in range(length):
+        px = start_x + (i if axis == 'x' else 0)
+        py = start_y + (i if axis == 'y' else 0)
+        if px < 0 or px >= img.width or py < 0 or py >= img.height:
+            print(f"FAIL: Sample ({px},{py}) outside image bounds {img.size}")
+            return False
+        c = img.getpixel((px, py))
+        vals.append(c[channel])
+
+    total_diff = vals[-1] - vals[0]
+    if total_diff < min_diff:
+        print(f"FAIL: Shadow falloff total delta {total_diff} is less than required {min_diff} (start={vals[0]}, end={vals[-1]})")
+        return False
+
+    for i in range(1, length):
+        if vals[i] < vals[i - 1] - 1:
+            print(f"FAIL: Non-monotonic decrease at step {i}: {vals[i - 1]} -> {vals[i]}")
+            return False
+
+    for i in range(1, length):
+        step = abs(vals[i] - vals[i - 1])
+        if step > max_step:
+            print(f"FAIL: Step at {i} too abrupt ({vals[i - 1]} -> {vals[i]}, jump={step} > {max_step})")
+            return False
+
+    print(f"PASS: Shadow falloff along {axis} from ({start_x},{start_y}) length={length}: values {vals[0]}..{vals[-1]} gradual and monotonic")
+    return True
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: verify.py <check-rect|check-alpha|check-pixel|check-thumb-subsurface|check-range|compare-images> <img_path> [args...]")
@@ -224,6 +280,22 @@ def main():
         img2 = sys.argv[3]
         tol = int(sys.argv[4]) if len(sys.argv) > 4 else 0
         res = compare_images(img, img2, tol)
+    elif cmd == "check-corner-aa":
+        x = int(sys.argv[3])
+        y = int(sys.argv[4])
+        bg = sys.argv[5]
+        fg = sys.argv[6]
+        min_dist = int(sys.argv[7]) if len(sys.argv) > 7 else 15
+        res = check_corner_aa(img, x, y, bg, fg, min_dist)
+    elif cmd == "check-shadow-falloff":
+        start_x = int(sys.argv[3])
+        start_y = int(sys.argv[4])
+        length = int(sys.argv[5])
+        axis = sys.argv[6] if len(sys.argv) > 6 else 'x'
+        channel = int(sys.argv[7]) if len(sys.argv) > 7 else 2
+        min_diff = int(sys.argv[8]) if len(sys.argv) > 8 else 15
+        max_step = int(sys.argv[9]) if len(sys.argv) > 9 else 8
+        res = check_shadow_falloff(img, start_x, start_y, length, axis, channel, min_diff, max_step)
     else:
         print(f"Unknown command {cmd}")
         sys.exit(1)

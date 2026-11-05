@@ -738,6 +738,29 @@ test_blur(const char *socket_name, const char *barrier_dir)
 	wl_display_roundtrip(ctx.display);
 	barrier_signal_and_wait(barrier_dir, "b_blur_wallpaper", "b_blur_wallpaper_cont");
 
+	/* Step 7: Corner Anti-Aliasing (solid Red window over Blue background with radius 16) */
+	printf("[corner-client] Step 7: corner anti-aliasing (radius 16)...\n");
+	for (int i = 0; i < 400 * 300; i++) {
+		fg_px[i] = 0xFFFF0000;
+	}
+	wex_window_commit_buffer(&fg_win);
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		16, WEX_WINDOW_MANAGER_V1_BACKDROP_NONE,
+		0, 0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_corners", "b_blur_corners_cont");
+
+	/* Step 8: Soft Shadow */
+	printf("[corner-client] Step 8: soft shadow...\n");
+	wex_window_manager_v1_set_effects(ctx.wex_window_manager, g_blur_handle,
+		16, WEX_WINDOW_MANAGER_V1_BACKDROP_NONE,
+		WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_SHADOW,
+		0, 0, 0, 0, 0);
+	wl_surface_commit(fg_win.surface);
+	wl_display_roundtrip(ctx.display);
+	barrier_signal_and_wait(barrier_dir, "b_blur_shadow", "b_blur_shadow_cont");
+
 	wex_window_finish(&fg_win);
 	wex_window_finish(&blocker_win);
 	wex_window_finish(&bg_win);

@@ -940,6 +940,93 @@ corner_piece_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *
 	return false;
 }
 
+static bool
+wex_window_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
+{
+	struct node_descriptor *desc = buffer->node.data;
+	struct view *view = desc ? desc->data : NULL;
+	struct wlr_surface *surface = view ? view->surface : NULL;
+	if (!surface) {
+		struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+		if (scene_surface) {
+			surface = scene_surface->surface;
+		}
+	}
+	if (!surface) {
+		return false;
+	}
+
+	if (!view) {
+		struct wlr_surface *root_surface = wlr_surface_get_root_surface(surface);
+		if (root_surface) {
+			view = view_from_wlr_surface(root_surface);
+		}
+	}
+
+	int r = view ? (int)view->wex_corner_radius : 0;
+	if (r == 0 && view && view->wex_foreign_frame) {
+		r = (int)view->wex_foreign_frame->corner_radius;
+	}
+	if (r > 32) r = 32;
+
+	int width = surface->current.width;
+	int height = surface->current.height;
+	if (r * 2 > width) r = width / 2;
+	if (r * 2 > height) r = height / 2;
+
+	if (r > 0) {
+		double x = *sx;
+		double y = *sy;
+		double dx = 0, dy = 0;
+		bool in_corner = false;
+		if (x < r && y < r) {
+			dx = r - x;
+			dy = r - y;
+			in_corner = true;
+		} else if (x >= width - r && y < r) {
+			dx = x - (width - r);
+			dy = r - y;
+			in_corner = true;
+		} else if (x < r && y >= height - r) {
+			dx = r - x;
+			dy = y - (height - r);
+			in_corner = true;
+		} else if (x >= width - r && y >= height - r) {
+			dx = x - (width - r);
+			dy = y - (height - r);
+			in_corner = true;
+		}
+		if (in_corner && (dx * dx + dy * dy > (double)r * r)) {
+			return false;
+		}
+	}
+
+	return wlr_surface_point_accepts_input(surface, *sx, *sy);
+}
+
+#if HAVE_SCENEFX
+static void
+apply_scenefx_corner_radius_tree(struct wlr_scene_node *node, int radius, int win_w, int win_h)
+{
+	if (!node) return;
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *buf = wlr_scene_buffer_from_node(node);
+		int bw = buf->dst_width > 0 ? buf->dst_width : buf->buffer_width;
+		int bh = buf->dst_height > 0 ? buf->dst_height : buf->buffer_height;
+		if (node->x == 0 && node->y == 0 && (bw == win_w || bw <= 0) && (bh == win_h || bh <= 0)) {
+			wlr_scene_buffer_set_corner_radius(buf, radius,
+				radius > 0 ? CORNER_LOCATION_ALL : CORNER_LOCATION_NONE);
+			buf->point_accepts_input = radius > 0 ? wex_window_point_accepts_input : NULL;
+		}
+	} else if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link) {
+			apply_scenefx_corner_radius_tree(child, radius, win_w, win_h);
+		}
+	}
+}
+#endif
+
 static void
 corner_piece_destroyed(struct wl_listener *listener, void *data)
 {
@@ -1022,6 +1109,14 @@ drop_corner_pieces(struct wex_window *win)
 			find_surface_buffer(&win->view->content_tree->node, win->view->surface);
 		if (root) {
 			scene_node_set_enabled(&root->node, true);
+#if HAVE_SCENEFX
+			struct server *server = win->manager ? win->manager->server : (win->view ? win->view->server : NULL);
+			if (server && server->fx_renderer) {
+				wlr_scene_buffer_set_corner_radius(root, 0, CORNER_LOCATION_NONE);
+				root->point_accepts_input = NULL;
+				apply_scenefx_corner_radius_tree(&win->view->content_tree->node, 0, win->view->current.width, win->view->current.height);
+			}
+#endif
 		}
 	}
 }
@@ -1269,52 +1364,97 @@ wex_window_update_effects(struct wex_window *win)
 	struct wlr_box slices[65];
 	size_t count = 0;
 
-	if (win->corner_radius == 0 || win->scene || !has_buffer) {
+#if HAVE_SCENEFX
+	struct server *server = win->manager ? win->manager->server : (win->view ? win->view->server : NULL);
+	bool scenefx_active = (server && server->fx_renderer);
+	bool is_blur_kind = (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR ||
+	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC ||
+	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA);
+	bool blur_enabled = (scenefx_active && is_blur_kind);
+
+	if (scenefx_active) {
 		drop_corner_pieces(win);
+		int r = (win->scene || !has_buffer) ? 0 : win->corner_radius;
 		if (root) {
 			scene_node_set_enabled(&root->node, true);
+			wlr_scene_buffer_set_corner_radius(root, r,
+				r > 0 ? CORNER_LOCATION_ALL : CORNER_LOCATION_NONE);
+			if (!root->node.data) {
+				node_descriptor_create(&root->node, LAB_NODE_DESC_VIEW, win->view);
+			}
+			root->point_accepts_input = r > 0 ? wex_window_point_accepts_input : NULL;
 		}
-	} else if (root) {
-		scene_node_set_enabled(&root->node, false);
-		count = compute_corner_slices(width, height, win->corner_radius, slices);
-
-		if (!win->corner_tree || win->num_corner_pieces != count) {
-			drop_corner_pieces(win);
-			win->corner_tree = wlr_scene_tree_create(win->view->scene_tree);
-			if (win->corner_tree) {
-				wlr_scene_node_set_position(&win->corner_tree->node, -geometry.x, -geometry.y);
-
-				win->corner_pieces = calloc(count, sizeof(*win->corner_pieces));
-				if (win->corner_pieces) {
-					win->num_corner_pieces = count;
-					for (size_t i = 0; i < count; i++) {
-						struct wlr_scene_surface *scene_surface =
-							wlr_scene_surface_create(win->corner_tree, surface);
-						if (!scene_surface) {
-							break;
-						}
-						win->corner_pieces[i].scene_surface = scene_surface;
-						win->corner_pieces[i].buffer = scene_surface->buffer;
-						win->corner_pieces[i].win = win;
-						win->corner_pieces[i].destroy.notify = corner_piece_destroyed;
-						wl_signal_add(&scene_surface->buffer->node.events.destroy,
-							&win->corner_pieces[i].destroy);
-						node_descriptor_create(&scene_surface->buffer->node,
-							LAB_NODE_DESC_VIEW, win->view);
-						scene_surface->buffer->point_accepts_input = corner_piece_accepts_input;
+		if (win->view->content_tree) {
+			apply_scenefx_corner_radius_tree(&win->view->content_tree->node, r, width, height);
+		}
+		if (win->scene) {
+			struct view *native = wex_scene_native(win->scene);
+			if (native && native->surface && native->content_tree) {
+				struct wlr_scene_buffer *native_root =
+					find_surface_buffer(&native->content_tree->node, native->surface);
+				if (native_root) {
+					struct wlr_box full = {0, 0, width, height};
+					if (win->corner_radius > 0 && has_buffer &&
+					    wex_scene_matches(win->scene, &full)) {
+						wlr_scene_buffer_set_corner_radius(native_root, win->corner_radius, CORNER_LOCATION_ALL);
+						native_root->point_accepts_input = wex_window_point_accepts_input;
+					} else {
+						wlr_scene_buffer_set_corner_radius(native_root, 0, CORNER_LOCATION_NONE);
+						native_root->point_accepts_input = NULL;
 					}
-					/* each scene surface resets its crop on commit: our listener must run after theirs */
-					wl_list_remove(&win->surface_commit.link);
-					win->surface_commit.notify = handle_window_surface_commit;
-					wl_signal_add(&surface->events.commit, &win->surface_commit);
 				}
 			}
 		}
+	} else
+#endif
+	{
+		if (win->corner_radius == 0 || win->scene || !has_buffer) {
+			drop_corner_pieces(win);
+			if (root) {
+				scene_node_set_enabled(&root->node, true);
+			}
+		} else if (root) {
+			scene_node_set_enabled(&root->node, false);
+			count = compute_corner_slices(width, height, win->corner_radius, slices);
 
-		if (win->corner_pieces) {
-			for (size_t i = 0; i < count; i++) {
-				win->corner_pieces[i].box = slices[i];
-				crop_corner_piece(win->corner_pieces[i].buffer, surface, slices[i]);
+			if (!win->corner_tree || win->num_corner_pieces != count) {
+				drop_corner_pieces(win);
+				win->corner_tree = wlr_scene_tree_create(win->view->scene_tree);
+				if (win->corner_tree) {
+					wlr_scene_node_set_position(&win->corner_tree->node, -geometry.x, -geometry.y);
+
+					win->corner_pieces = calloc(count, sizeof(*win->corner_pieces));
+					if (win->corner_pieces) {
+						win->num_corner_pieces = count;
+						for (size_t i = 0; i < count; i++) {
+							struct wlr_scene_surface *scene_surface =
+								wlr_scene_surface_create(win->corner_tree, surface);
+							if (!scene_surface) {
+								break;
+							}
+							win->corner_pieces[i].scene_surface = scene_surface;
+							win->corner_pieces[i].buffer = scene_surface->buffer;
+							win->corner_pieces[i].win = win;
+							win->corner_pieces[i].destroy.notify = corner_piece_destroyed;
+							wl_signal_add(&scene_surface->buffer->node.events.destroy,
+								&win->corner_pieces[i].destroy);
+							node_descriptor_create(&scene_surface->buffer->node,
+								LAB_NODE_DESC_VIEW, win->view);
+							scene_surface->buffer->point_accepts_input = corner_piece_accepts_input;
+						}
+						/* each scene surface resets its crop on commit: our listener must run after theirs */
+						wl_list_remove(&win->surface_commit.link);
+						win->surface_commit.notify = handle_window_surface_commit;
+						wl_signal_add(&surface->events.commit, &win->surface_commit);
+					}
+				}
+			}
+
+			if (win->corner_pieces) {
+				for (size_t i = 0; i < count; i++) {
+					win->corner_pieces[i].box = slices[i];
+					crop_corner_piece(win->corner_pieces[i].buffer, surface, slices[i]);
+				}
 			}
 		}
 	}
@@ -1323,12 +1463,6 @@ wex_window_update_effects(struct wex_window *win)
 	scene_tree_destroy_and_null(&win->backdrop_tree);
 
 #if HAVE_SCENEFX
-	struct server *server = win->manager ? win->manager->server : (win->view ? win->view->server : NULL);
-	bool is_blur_kind = (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR ||
-	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_ACRYLIC ||
-	                     win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA);
-	bool blur_enabled = (server && server->fx_renderer && is_blur_kind);
-
 	if (blur_enabled && server->scene) {
 		/* SceneFX stores one blur_data in the scene, not in each blur node.
 		 * Keep the shared parameters at the Acrylic quality level; changing
@@ -1395,28 +1529,27 @@ wex_window_update_effects(struct wex_window *win)
 #endif
 					}
 				}
-			} else if (win->corner_radius > 0 && count > 0) {
 #if HAVE_SCENEFX
-				if (blur_enabled) {
-					struct wlr_scene_rect *rect = wlr_scene_rect_create(
-						win->backdrop_tree, width, height, bcolor);
-					if (rect) {
-						wlr_scene_node_set_position(&rect->node, 0, 0);
-						wlr_scene_rect_set_corner_radius(rect, win->corner_radius, CORNER_LOCATION_ALL);
+			} else if (scenefx_active && win->corner_radius > 0) {
+				struct wlr_scene_rect *rect = wlr_scene_rect_create(
+					win->backdrop_tree, width, height, bcolor);
+				if (rect) {
+					wlr_scene_node_set_position(&rect->node, 0, 0);
+					wlr_scene_rect_set_corner_radius(rect, win->corner_radius, CORNER_LOCATION_ALL);
+					if (blur_enabled) {
 						wlr_scene_rect_set_backdrop_blur(rect, true);
 						if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_MICA) {
 							wlr_scene_rect_set_backdrop_blur_optimized(rect, true);
 						}
 					}
-				} else
+				}
 #endif
-				{
-					for (size_t i = 0; i < count; i++) {
-						struct wlr_scene_rect *rect = wlr_scene_rect_create(
-							win->backdrop_tree, slices[i].width, slices[i].height, bcolor);
-						if (rect) {
-							wlr_scene_node_set_position(&rect->node, slices[i].x, slices[i].y);
-						}
+			} else if (win->corner_radius > 0 && count > 0) {
+				for (size_t i = 0; i < count; i++) {
+					struct wlr_scene_rect *rect = wlr_scene_rect_create(
+						win->backdrop_tree, slices[i].width, slices[i].height, bcolor);
+					if (rect) {
+						wlr_scene_node_set_position(&rect->node, slices[i].x, slices[i].y);
 					}
 				}
 			} else {
@@ -1445,17 +1578,48 @@ wex_window_update_effects(struct wex_window *win)
 		if (win->shadow_tree) {
 			wlr_scene_node_set_position(&win->shadow_tree->node, -geometry.x, -geometry.y);
 
-			static const int shadow_spreads[6] = { 2, 4, 6, 8, 10, 12 };
-			float shadow_color[4] = { 0.f, 0.f, 0.f, 0.025f };
+#if HAVE_SCENEFX
+			if (scenefx_active) {
+				float blur_sigma;
+				float shadow_color[4] = { 0.f, 0.f, 0.f, 0.f };
+				if (win->effects_backdrop == WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR) {
+					/* Aero: ~8-10 px blur */
+					blur_sigma = 8.0f;
+					shadow_color[3] = 0.35f;
+				} else {
+					/* Windows 10/11: soft ~20-30 px blur shadow with low opacity */
+					blur_sigma = 24.0f;
+					shadow_color[3] = 0.22f;
+				}
+				int pad = (int)blur_sigma;
+				int sw = width + 2 * pad;
+				int sh = height + 2 * pad;
+				struct wlr_scene_shadow *shadow = wlr_scene_shadow_create(
+					win->shadow_tree, sw, sh, win->corner_radius, blur_sigma, shadow_color);
+				if (shadow) {
+					wlr_scene_node_set_position(&shadow->node, -pad, -pad + 2);
+					struct clipped_region clip = {
+						.area = (struct wlr_box){ pad, pad - 2, width, height },
+						.corner_radius = win->corner_radius,
+						.corners = win->corner_radius > 0 ? CORNER_LOCATION_ALL : CORNER_LOCATION_NONE,
+					};
+					wlr_scene_shadow_set_clipped_region(shadow, clip);
+				}
+			} else
+#endif
+			{
+				static const int shadow_spreads[6] = { 2, 4, 6, 8, 10, 12 };
+				float shadow_color[4] = { 0.f, 0.f, 0.f, 0.025f };
 
-			for (int i = 0; i < 6; i++) {
-				int s = shadow_spreads[i];
-				int sw = width + 2 * s;
-				int sh = height + 2 * s;
-				struct wlr_scene_rect *rect = wlr_scene_rect_create(
-					win->shadow_tree, sw, sh, shadow_color);
-				if (rect) {
-					wlr_scene_node_set_position(&rect->node, -s, -s + 2);
+				for (int i = 0; i < 6; i++) {
+					int s = shadow_spreads[i];
+					int sw = width + 2 * s;
+					int sh = height + 2 * s;
+					struct wlr_scene_rect *rect = wlr_scene_rect_create(
+						win->shadow_tree, sw, sh, shadow_color);
+					if (rect) {
+						wlr_scene_node_set_position(&rect->node, -s, -s + 2);
+					}
 				}
 			}
 		}

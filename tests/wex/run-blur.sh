@@ -149,6 +149,16 @@ for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_wallpaper" ]; then break; fi;
 grim "$OUT_DIR/06_blur_mica_wallpaper.png"
 touch "$BARRIER_DIR/b_blur_wallpaper_cont"
 
+# Step 7: Corner Anti-Aliasing
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_corners" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/07_blur_corners.png"
+touch "$BARRIER_DIR/b_blur_corners_cont"
+
+# Step 8: Soft Shadow
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_blur_shadow" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/08_blur_shadow.png"
+touch "$BARRIER_DIR/b_blur_shadow_cont"
+
 wait "$BLUR_PID"
 
 echo "=========================================================="
@@ -208,6 +218,26 @@ run_check "Mica: a blue wallpaper reaches the cached sample (blue channel)" \
 
 run_check "Mica: a blue wallpaper replaces the old white sample (red channel)" \
     python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/06_blur_mica_wallpaper.png" 600 350 0 180 0
+
+# Verification 7: Corner Anti-Aliasing (SceneFX SDF corner shader)
+run_check "Corner AA: Outside corner (440, 250) is background Blue" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/07_blur_corners.png" 440 250 0000FF 5
+
+run_check "Corner AA: Inside corner (460, 270) is foreground Red" \
+    python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/07_blur_corners.png" 460 270 FF0000 5
+
+run_check "Corner AA: Edge pixel (444, 254) has intermediate colour (anti-aliased)" \
+    python3 "$SCRIPT_DIR/verify.py" check-corner-aa "$OUT_DIR/07_blur_corners.png" 444 254 0000FF FF0000 15
+
+run_check "Corner AA: Edge pixel (451, 250) has intermediate colour (anti-aliased)" \
+    python3 "$SCRIPT_DIR/verify.py" check-corner-aa "$OUT_DIR/07_blur_corners.png" 451 250 0000FF FF0000 15
+
+# Verification 8: Soft Shadow (SceneFX Gaussian blur shadow)
+run_check "Soft Shadow: Right edge pixels (840..860, 400) fall off gradually and monotonically" \
+    python3 "$SCRIPT_DIR/verify.py" check-shadow-falloff "$OUT_DIR/08_blur_shadow.png" 840 400 21 x 2 15 8
+
+run_check "Soft Shadow: Bottom edge pixels (640, 550..570) fall off gradually and monotonically" \
+    python3 "$SCRIPT_DIR/verify.py" check-shadow-falloff "$OUT_DIR/08_blur_shadow.png" 640 550 21 y 2 15 8
 
 echo "=========================================================="
 echo " All blur checks passed ($TESTS_PASSED/$((TESTS_PASSED + TESTS_FAILED)))"
