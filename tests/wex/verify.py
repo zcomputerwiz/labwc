@@ -124,6 +124,28 @@ def check_range(image_path, x, y, min_val, max_val, channel=None):
     print(f"PASS: Pixel at ({x},{y}) value {c} in range [{min_val}, {max_val}]")
     return True
 
+def check_average(image_path, x, y, w, h, min_val, max_val, channel=None):
+    img = Image.open(image_path).convert('RGB')
+    if x < 0 or y < 0 or x + w > img.width or y + h > img.height:
+        print(f"FAIL: Rect ({x}, {y}, {w}, {h}) exceeds image bounds {img.size}")
+        return False
+    total = [0.0, 0.0, 0.0]
+    count = w * h
+    for py in range(y, y + h):
+        for px in range(x, x + w):
+            c = img.getpixel((px, py))
+            total[0] += c[0]
+            total[1] += c[1]
+            total[2] += c[2]
+    avg = [total[0] / count, total[1] / count, total[2] / count]
+    vals = [avg[channel]] if channel is not None else avg
+    for v in vals:
+        if v < min_val or v > max_val:
+            print(f"FAIL: Rect ({x},{y},{w},{h}) average {avg} out of range [{min_val}, {max_val}]")
+            return False
+    print(f"PASS: Rect ({x},{y},{w},{h}) average {avg} in range [{min_val}, {max_val}]")
+    return True
+
 def compare_images(image1_path, image2_path, tolerance=0):
     img1 = Image.open(image1_path).convert('RGB')
     img2 = Image.open(image2_path).convert('RGB')
@@ -189,6 +211,15 @@ def main():
         max_val = int(sys.argv[6])
         channel = int(sys.argv[7]) if len(sys.argv) > 7 else None
         res = check_range(img, x, y, min_val, max_val, channel)
+    elif cmd in ("check-average", "average"):
+        x = int(sys.argv[3])
+        y = int(sys.argv[4])
+        w = int(sys.argv[5])
+        h = int(sys.argv[6])
+        min_val = float(sys.argv[7])
+        max_val = float(sys.argv[8])
+        channel = int(sys.argv[9]) if len(sys.argv) > 9 else None
+        res = check_average(img, x, y, w, h, min_val, max_val, channel)
     elif cmd == "compare-images":
         img2 = sys.argv[3]
         tol = int(sys.argv[4]) if len(sys.argv) > 4 else 0

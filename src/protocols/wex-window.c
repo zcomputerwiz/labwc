@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/render/pass.h>
 #include "wex-scene.h"
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
@@ -1731,6 +1732,10 @@ thumbnail_mirror_get(struct wex_thumbnail_entry *entry, struct wlr_surface *surf
 	if (!scene_surface) {
 		return NULL;
 	}
+	if (scene_surface->buffer) {
+		wlr_scene_buffer_set_filter_mode(scene_surface->buffer,
+			WLR_SCALE_FILTER_BILINEAR);
+	}
 	mirror = znew(*mirror);
 	if (!mirror) {
 		wlr_scene_node_destroy(&scene_surface->buffer->node);
@@ -1872,6 +1877,9 @@ thumbnail_apply_piece(struct wex_thumb_mirror *mirror,
 	}
 	if (sb->opacity != opacity) {
 		wlr_scene_buffer_set_opacity(sb, opacity);
+	}
+	if (sb->filter_mode != WLR_SCALE_FILTER_BILINEAR) {
+		wlr_scene_buffer_set_filter_mode(sb, WLR_SCALE_FILTER_BILINEAR);
 	}
 	sb->point_accepts_input = thumbnail_point_accepts_input;
 	scene_node_set_enabled(&sb->node, true);

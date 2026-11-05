@@ -238,6 +238,24 @@ run_check "Thumbnail Minimized: Dest B thumbnail rect (500, 200) still displays 
 run_check "Thumbnail Cleared: Dest B thumbnail rect (500, 200) restored to navy" \
     python3 "$SCRIPT_DIR/verify.py" check-pixel "$OUT_DIR/23_thumb_cleared.png" 500 200 112233 5
 
+# TEST 21b: wex_window_manager_v1 v14 thumbnail scaling quality (1/4 downscale checker)
+rm -f "$BARRIER_DIR"/*
+echo "Testing wex-window-v1 v14 set_thumbnails scaling quality (1/4 downscale checker)..."
+"$SCRIPT_DIR/corner-client" --socket wex-shell-0 --scenario thumbnails-scale --barrier-dir "$BARRIER_DIR" &
+THUMB_SCALE_PID=$!
+
+for i in {1..100}; do if [ -f "$BARRIER_DIR/b_thumb_scale" ]; then break; fi; sleep 0.05; done
+grim "$OUT_DIR/23b_thumb_scale.png"
+touch "$BARRIER_DIR/b_thumb_scale_cont"
+
+wait "$THUMB_SCALE_PID"
+
+run_check "Thumbnail Scaling: 1/4 scaled checker pattern average colour is mid-gray" \
+    python3 "$SCRIPT_DIR/verify.py" check-average "$OUT_DIR/23b_thumb_scale.png" 455 155 40 40 115 140
+
+run_check "Thumbnail Scaling: Centre pixel of 1/4 scaled checker is mid-gray" \
+    python3 "$SCRIPT_DIR/verify.py" check-range "$OUT_DIR/23b_thumb_scale.png" 475 175 115 140
+
 # TEST 22: wex_window_manager_v1 v14 set_peek (Aero Peek)
 rm -f "$BARRIER_DIR"/*
 echo "Testing wex-window-v1 v14 set_peek (Aero Peek target and restore)..."
