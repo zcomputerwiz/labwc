@@ -984,6 +984,23 @@ crop_corner_piece(struct wlr_scene_buffer *buffer, struct wlr_surface *surface, 
 }
 
 static void
+scene_node_set_enabled(struct wlr_scene_node *node, bool enabled)
+{
+	if (node && node->enabled != enabled) {
+		wlr_scene_node_set_enabled(node, enabled);
+	}
+}
+
+static void
+scene_tree_destroy_and_null(struct wlr_scene_tree **tree)
+{
+	if (tree && *tree) {
+		wlr_scene_node_destroy(&(*tree)->node);
+		*tree = NULL;
+	}
+}
+
+static void
 drop_corner_pieces(struct wex_window *win)
 {
 	if (win->corner_pieces) {
@@ -996,17 +1013,14 @@ drop_corner_pieces(struct wex_window *win)
 		win->corner_pieces = NULL;
 	}
 	win->num_corner_pieces = 0;
-	if (win->corner_tree) {
-		wlr_scene_node_destroy(&win->corner_tree->node);
-		win->corner_tree = NULL;
-	}
+	scene_tree_destroy_and_null(&win->corner_tree);
 	/* Re-enable the original unclipped root buffer node that was disabled
 	 * when the corner slices were created. */
 	if (win->view && win->view->surface && win->view->content_tree) {
 		struct wlr_scene_buffer *root =
 			find_surface_buffer(&win->view->content_tree->node, win->view->surface);
 		if (root) {
-			wlr_scene_node_set_enabled(&root->node, true);
+			scene_node_set_enabled(&root->node, true);
 		}
 	}
 }
@@ -1014,14 +1028,8 @@ drop_corner_pieces(struct wex_window *win)
 static void
 drop_effects(struct wex_window *win)
 {
-	if (win->backdrop_tree) {
-		wlr_scene_node_destroy(&win->backdrop_tree->node);
-		win->backdrop_tree = NULL;
-	}
-	if (win->shadow_tree) {
-		wlr_scene_node_destroy(&win->shadow_tree->node);
-		win->shadow_tree = NULL;
-	}
+	scene_tree_destroy_and_null(&win->backdrop_tree);
+	scene_tree_destroy_and_null(&win->shadow_tree);
 }
 
 /* The shared Mica blur node blurs the whole desktop layer while it exists: drop it when no window shows Mica. */
@@ -1204,6 +1212,36 @@ compute_backdrop_color(uint32_t backdrop, uint32_t flags, uint32_t tint, float c
 	color[3] = a;
 }
 
+/* Stacking order below content_tree:
+ * shadow_tree -> backdrop_tree -> corner_tree -> content_tree
+ */
+static void
+window_restack_decorations(struct wex_window *win)
+{
+	if (!win->view || !win->view->content_tree) {
+		return;
+	}
+	struct wlr_scene_node *content = &win->view->content_tree->node;
+	if (win->backdrop_tree) {
+		wlr_scene_node_place_below(&win->backdrop_tree->node, content);
+	}
+	if (win->shadow_tree) {
+		if (win->backdrop_tree) {
+			wlr_scene_node_place_below(&win->shadow_tree->node, &win->backdrop_tree->node);
+		} else if (win->corner_tree) {
+			wlr_scene_node_place_below(&win->shadow_tree->node, &win->corner_tree->node);
+		} else {
+			wlr_scene_node_place_below(&win->shadow_tree->node, content);
+		}
+	}
+	if (win->corner_tree) {
+		wlr_scene_node_place_below(&win->corner_tree->node, content);
+		if (win->backdrop_tree) {
+			wlr_scene_node_place_above(&win->corner_tree->node, &win->backdrop_tree->node);
+		}
+	}
+}
+
 void
 wex_window_update_effects(struct wex_window *win)
 {
@@ -1233,17 +1271,16 @@ wex_window_update_effects(struct wex_window *win)
 	if (win->corner_radius == 0 || win->scene || !has_buffer) {
 		drop_corner_pieces(win);
 		if (root) {
-			wlr_scene_node_set_enabled(&root->node, true);
+			scene_node_set_enabled(&root->node, true);
 		}
 	} else if (root) {
-		wlr_scene_node_set_enabled(&root->node, false);
+		scene_node_set_enabled(&root->node, false);
 		count = compute_corner_slices(width, height, win->corner_radius, slices);
 
 		if (!win->corner_tree || win->num_corner_pieces != count) {
 			drop_corner_pieces(win);
 			win->corner_tree = wlr_scene_tree_create(win->view->scene_tree);
 			if (win->corner_tree) {
-				wlr_scene_node_place_below(&win->corner_tree->node, &win->view->content_tree->node);
 				wlr_scene_node_set_position(&win->corner_tree->node, -geometry.x, -geometry.y);
 
 				win->corner_pieces = calloc(count, sizeof(*win->corner_pieces));
@@ -1282,10 +1319,7 @@ wex_window_update_effects(struct wex_window *win)
 	}
 
 	/* 2. Backdrop */
-	if (win->backdrop_tree) {
-		wlr_scene_node_destroy(&win->backdrop_tree->node);
-		win->backdrop_tree = NULL;
-	}
+	scene_tree_destroy_and_null(&win->backdrop_tree);
 
 #if HAVE_SCENEFX
 	struct server *server = win->manager ? win->manager->server : (win->view ? win->view->server : NULL);
@@ -1335,7 +1369,6 @@ wex_window_update_effects(struct wex_window *win)
 		win->backdrop_tree = wlr_scene_tree_create(win->view->scene_tree);
 		if (win->backdrop_tree) {
 			wlr_scene_node_set_position(&win->backdrop_tree->node, -geometry.x, -geometry.y);
-			wlr_scene_node_place_below(&win->backdrop_tree->node, &win->view->content_tree->node);
 
 			float bcolor[4];
 			compute_backdrop_color(win->effects_backdrop, win->effects_flags,
@@ -1404,10 +1437,7 @@ wex_window_update_effects(struct wex_window *win)
 	}
 
 	/* 3. Shadow */
-	if (win->shadow_tree) {
-		wlr_scene_node_destroy(&win->shadow_tree->node);
-		win->shadow_tree = NULL;
-	}
+	scene_tree_destroy_and_null(&win->shadow_tree);
 
 	if ((win->effects_flags & WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_SHADOW) && has_buffer) {
 		win->shadow_tree = wlr_scene_tree_create(win->view->scene_tree);
@@ -1430,27 +1460,7 @@ wex_window_update_effects(struct wex_window *win)
 		}
 	}
 
-	/* Stacking order below content_tree:
-	 * shadow_tree -> backdrop_tree -> corner_tree -> content_tree
-	 */
-	if (win->backdrop_tree) {
-		wlr_scene_node_place_below(&win->backdrop_tree->node, &win->view->content_tree->node);
-	}
-	if (win->shadow_tree) {
-		if (win->backdrop_tree) {
-			wlr_scene_node_place_below(&win->shadow_tree->node, &win->backdrop_tree->node);
-		} else if (win->corner_tree) {
-			wlr_scene_node_place_below(&win->shadow_tree->node, &win->corner_tree->node);
-		} else {
-			wlr_scene_node_place_below(&win->shadow_tree->node, &win->view->content_tree->node);
-		}
-	}
-	if (win->corner_tree) {
-		wlr_scene_node_place_below(&win->corner_tree->node, &win->view->content_tree->node);
-		if (win->backdrop_tree) {
-			wlr_scene_node_place_above(&win->corner_tree->node, &win->backdrop_tree->node);
-		}
-	}
+	window_restack_decorations(win);
 
 	mica_blur_release_if_unused(win->manager);
 	if (win->view->output) {
@@ -1690,6 +1700,23 @@ handle_mirror_node_destroy(struct wl_listener *listener, void *data)
 	free(mirror);
 }
 
+static void
+thumbnail_mirror_destroy(struct wex_thumb_mirror *mirror)
+{
+	if (!mirror) {
+		return;
+	}
+	if (mirror->node_destroy.link.prev) {
+		wl_list_remove(&mirror->node_destroy.link);
+		wl_list_init(&mirror->node_destroy.link);
+	}
+	if (mirror->scene_surface && mirror->scene_surface->buffer) {
+		wlr_scene_node_destroy(&mirror->scene_surface->buffer->node);
+	}
+	wl_list_remove(&mirror->link);
+	free(mirror);
+}
+
 static struct wex_thumb_mirror *
 thumbnail_mirror_get(struct wex_thumbnail_entry *entry, struct wlr_surface *surface)
 {
@@ -1722,9 +1749,141 @@ thumbnail_entry_disable_all(struct wex_thumbnail_entry *entry)
 {
 	struct wex_thumb_mirror *mirror;
 	wl_list_for_each(mirror, &entry->mirrors, link) {
-		if (mirror->scene_surface && mirror->scene_surface->buffer &&
-		    mirror->scene_surface->buffer->node.enabled) {
-			wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+		if (mirror->scene_surface && mirror->scene_surface->buffer) {
+			scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
+		}
+	}
+}
+
+struct thumbnail_piece_layout {
+	bool visible;
+	int x, y;
+	int width, height;
+	struct wlr_fbox src_box;
+};
+
+static void
+thumbnail_layout(const struct wex_thumbnail_entry *entry,
+		const struct wl_array *surfaces, int ox, int oy,
+		struct thumbnail_piece_layout *layouts)
+{
+	struct wlr_surface *dest_surf = entry->dest_win->view->surface;
+	struct wlr_surface *src_surf = entry->src_win->view->surface;
+
+	int dw_total = dest_surf->current.width;
+	int dh_total = dest_surf->current.height;
+	int dest_w = entry->dest_rect[2] - entry->dest_rect[0];
+	int dest_h = entry->dest_rect[3] - entry->dest_rect[1];
+
+	int src_x = 0, src_y = 0;
+	int src_w = src_surf->current.width;
+	int src_h = src_surf->current.height;
+
+	if (entry->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_HAS_SOURCE) {
+		src_x = entry->src_rect[0];
+		src_y = entry->src_rect[1];
+		src_w = entry->src_rect[2] - entry->src_rect[0];
+		src_h = entry->src_rect[3] - entry->src_rect[1];
+	}
+
+	struct wlr_box S = { src_x, src_y, src_w, src_h };
+	double sx = (double)dest_w / (double)src_w;
+	double sy = (double)dest_h / (double)src_h;
+
+	struct wlr_scene_surface **ss;
+	size_t idx = 0;
+	wl_array_for_each(ss, surfaces) {
+		struct wlr_scene_surface *s = *ss;
+		struct wlr_surface *W = s->surface;
+		struct thumbnail_piece_layout *piece = &layouts[idx++];
+		piece->visible = false;
+
+		if (!wlr_surface_has_buffer(W) || W->current.width <= 0 || W->current.height <= 0) {
+			continue;
+		}
+
+		int bx, by;
+		wlr_scene_node_coords(&s->buffer->node, &bx, &by);
+		struct wlr_box R = { bx - ox, by - oy, W->current.width, W->current.height };
+
+		struct wlr_box inter;
+		if (!wlr_box_intersection(&inter, &R, &S)) {
+			continue;
+		}
+
+		double P_x = entry->dest_rect[0] + (inter.x - src_x) * sx;
+		double P_y = entry->dest_rect[1] + (inter.y - src_y) * sy;
+		double P_w = inter.width * sx;
+		double P_h = inter.height * sy;
+
+		double cl_left = P_x < 0 ? 0 : P_x;
+		double cl_top = P_y < 0 ? 0 : P_y;
+		double cl_right = P_x + P_w > dw_total ? dw_total : P_x + P_w;
+		double cl_bottom = P_y + P_h > dh_total ? dh_total : P_y + P_h;
+		double cl_w = cl_right - cl_left;
+		double cl_h = cl_bottom - cl_top;
+		if (cl_w <= 0 || cl_h <= 0) {
+			continue;
+		}
+
+		int dest_size_w = (int)(cl_w + 0.5);
+		if (dest_size_w < 1) dest_size_w = 1;
+		int dest_size_h = (int)(cl_h + 0.5);
+		if (dest_size_h < 1) dest_size_h = 1;
+		int pos_x = (int)(cl_left + 0.5);
+		int pos_y = (int)(cl_top + 0.5);
+
+		double sub_x = src_x + (cl_left - entry->dest_rect[0]) / sx - R.x;
+		double sub_y = src_y + (cl_top - entry->dest_rect[1]) / sy - R.y;
+		double sub_w = cl_w / sx;
+		double sub_h = cl_h / sy;
+
+		thumbnail_source_box(W, sub_x, sub_y, sub_w, sub_h, &piece->src_box);
+		piece->x = pos_x;
+		piece->y = pos_y;
+		piece->width = dest_size_w;
+		piece->height = dest_size_h;
+		piece->visible = true;
+	}
+}
+
+static void
+thumbnail_apply_piece(struct wex_thumb_mirror *mirror,
+		const struct thumbnail_piece_layout *layout, float opacity)
+{
+	if (!mirror || !mirror->scene_surface || !mirror->scene_surface->buffer) {
+		return;
+	}
+
+	struct wlr_scene_buffer *sb = mirror->scene_surface->buffer;
+	if (!layout->visible) {
+		scene_node_set_enabled(&sb->node, false);
+		return;
+	}
+
+	if (sb->dst_width != layout->width || sb->dst_height != layout->height) {
+		wlr_scene_buffer_set_dest_size(sb, layout->width, layout->height);
+	}
+	if (sb->node.x != layout->x || sb->node.y != layout->y) {
+		wlr_scene_node_set_position(&sb->node, layout->x, layout->y);
+	}
+	if (!wlr_fbox_equal(&sb->src_box, &layout->src_box)) {
+		wlr_scene_buffer_set_source_box(sb, &layout->src_box);
+	}
+	if (sb->opacity != opacity) {
+		wlr_scene_buffer_set_opacity(sb, opacity);
+	}
+	sb->point_accepts_input = thumbnail_point_accepts_input;
+	scene_node_set_enabled(&sb->node, true);
+}
+
+static void
+thumbnail_prune_unseen(struct wex_thumbnail_entry *entry)
+{
+	struct wex_thumb_mirror *mirror, *tmp;
+	wl_list_for_each_safe(mirror, tmp, &entry->mirrors, link) {
+		if (!mirror->seen) {
+			thumbnail_mirror_destroy(mirror);
 		}
 	}
 }
@@ -1738,16 +1897,12 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		return;
 	}
 
-	struct wlr_surface *dest_surf = entry->dest_win->view->surface;
 	struct wlr_surface *src_surf = entry->src_win->view->surface;
 
 	if (!wlr_surface_has_buffer(src_surf) || src_surf->current.width <= 0 || src_surf->current.height <= 0) {
 		thumbnail_entry_disable_all(entry);
 		return;
 	}
-
-	int dw_total = dest_surf->current.width;
-	int dh_total = dest_surf->current.height;
 
 	int dest_w = entry->dest_rect[2] - entry->dest_rect[0];
 	int dest_h = entry->dest_rect[3] - entry->dest_rect[1];
@@ -1756,13 +1911,9 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		return;
 	}
 
-	int src_x = 0, src_y = 0;
 	int src_w = src_surf->current.width;
 	int src_h = src_surf->current.height;
-
 	if (entry->flags & WEX_WINDOW_MANAGER_V1_THUMBNAIL_FLAGS_HAS_SOURCE) {
-		src_x = entry->src_rect[0];
-		src_y = entry->src_rect[1];
 		src_w = entry->src_rect[2] - entry->src_rect[0];
 		src_h = entry->src_rect[3] - entry->src_rect[1];
 	}
@@ -1770,8 +1921,6 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		thumbnail_entry_disable_all(entry);
 		return;
 	}
-
-	struct wlr_box S = { src_x, src_y, src_w, src_h };
 
 	struct wlr_scene_buffer *root_buffer =
 		thumbnail_find_surface_buffer(&entry->src_win->view->scene_tree->node, src_surf);
@@ -1791,17 +1940,28 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		mirror->seen = false;
 	}
 
-	double sx = (double)dest_w / (double)src_w;
-	double sy = (double)dest_h / (double)src_h;
+	size_t num_surfaces = surfaces.size / sizeof(struct wlr_scene_surface *);
+	if (num_surfaces == 0) {
+		thumbnail_entry_disable_all(entry);
+		thumbnail_prune_unseen(entry);
+		wl_array_release(&surfaces);
+		return;
+	}
+
+	struct thumbnail_piece_layout layouts[num_surfaces];
+	thumbnail_layout(entry, &surfaces, ox, oy, layouts);
+
 	uint32_t op = entry->opacity > 255 ? 255 : entry->opacity;
+	float opacity = (float)op / 255.0f;
 
 	struct wlr_scene_surface **ss;
 	struct wex_thumb_mirror *prev_mirror = NULL;
+	size_t idx = 0;
 	wl_array_for_each(ss, &surfaces) {
 		struct wlr_scene_surface *s = *ss;
-		struct wlr_surface *W = s->surface;
+		const struct thumbnail_piece_layout *layout = &layouts[idx++];
 
-		mirror = thumbnail_mirror_get(entry, W);
+		mirror = thumbnail_mirror_get(entry, s->surface);
 		if (!mirror) {
 			continue;
 		}
@@ -1814,91 +1974,10 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		}
 		prev_mirror = mirror;
 
-		if (!wlr_surface_has_buffer(W) || W->current.width <= 0 || W->current.height <= 0) {
-			if (mirror->scene_surface->buffer->node.enabled) {
-				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
-			}
-			continue;
-		}
-
-		int bx, by;
-		wlr_scene_node_coords(&s->buffer->node, &bx, &by);
-		struct wlr_box R = { bx - ox, by - oy, W->current.width, W->current.height };
-
-		struct wlr_box inter;
-		if (!wlr_box_intersection(&inter, &R, &S)) {
-			if (mirror->scene_surface->buffer->node.enabled) {
-				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
-			}
-			continue;
-		}
-
-		double P_x = entry->dest_rect[0] + (inter.x - src_x) * sx;
-		double P_y = entry->dest_rect[1] + (inter.y - src_y) * sy;
-		double P_w = inter.width * sx;
-		double P_h = inter.height * sy;
-
-		double cl_left = P_x < 0 ? 0 : P_x;
-		double cl_top = P_y < 0 ? 0 : P_y;
-		double cl_right = P_x + P_w > dw_total ? dw_total : P_x + P_w;
-		double cl_bottom = P_y + P_h > dh_total ? dh_total : P_y + P_h;
-		double cl_w = cl_right - cl_left;
-		double cl_h = cl_bottom - cl_top;
-		if (cl_w <= 0 || cl_h <= 0) {
-			if (mirror->scene_surface->buffer->node.enabled) {
-				wlr_scene_node_set_enabled(&mirror->scene_surface->buffer->node, false);
-			}
-			continue;
-		}
-
-		int dest_size_w = (int)(cl_w + 0.5);
-		if (dest_size_w < 1) dest_size_w = 1;
-		int dest_size_h = (int)(cl_h + 0.5);
-		if (dest_size_h < 1) dest_size_h = 1;
-		int pos_x = (int)(cl_left + 0.5);
-		int pos_y = (int)(cl_top + 0.5);
-
-		double sub_x = src_x + (cl_left - entry->dest_rect[0]) / sx - R.x;
-		double sub_y = src_y + (cl_top - entry->dest_rect[1]) / sy - R.y;
-		double sub_w = cl_w / sx;
-		double sub_h = cl_h / sy;
-
-		struct wlr_fbox source;
-		thumbnail_source_box(W, sub_x, sub_y, sub_w, sub_h, &source);
-		float opacity = (float)op / 255.0f;
-
-		struct wlr_scene_buffer *sb = mirror->scene_surface->buffer;
-		if (sb->dst_width != dest_size_w || sb->dst_height != dest_size_h) {
-			wlr_scene_buffer_set_dest_size(sb, dest_size_w, dest_size_h);
-		}
-		if (sb->node.x != pos_x || sb->node.y != pos_y) {
-			wlr_scene_node_set_position(&sb->node, pos_x, pos_y);
-		}
-		if (!wlr_fbox_equal(&sb->src_box, &source)) {
-			wlr_scene_buffer_set_source_box(sb, &source);
-		}
-		if (sb->opacity != opacity) {
-			wlr_scene_buffer_set_opacity(sb, opacity);
-		}
-		mirror->scene_surface->buffer->point_accepts_input = thumbnail_point_accepts_input;
-		if (!sb->node.enabled) {
-			wlr_scene_node_set_enabled(&sb->node, true);
-		}
+		thumbnail_apply_piece(mirror, layout, opacity);
 	}
 
-	struct wex_thumb_mirror *mirror_tmp;
-	wl_list_for_each_safe(mirror, mirror_tmp, &entry->mirrors, link) {
-		if (!mirror->seen) {
-			if (mirror->node_destroy.link.prev) {
-				wl_list_remove(&mirror->node_destroy.link);
-				wl_list_init(&mirror->node_destroy.link);
-			}
-			wlr_scene_node_destroy(&mirror->scene_surface->buffer->node);
-			wl_list_remove(&mirror->link);
-			free(mirror);
-		}
-	}
-
+	thumbnail_prune_unseen(entry);
 	wl_array_release(&surfaces);
 }
 
@@ -1916,15 +1995,7 @@ thumbnail_entry_destroy(struct wex_thumbnail_entry *entry)
 	}
 	struct wex_thumb_mirror *mirror, *mirror_tmp;
 	wl_list_for_each_safe(mirror, mirror_tmp, &entry->mirrors, link) {
-		if (mirror->node_destroy.link.prev) {
-			wl_list_remove(&mirror->node_destroy.link);
-			wl_list_init(&mirror->node_destroy.link);
-		}
-		if (mirror->scene_surface) {
-			wlr_scene_node_destroy(&mirror->scene_surface->buffer->node);
-		}
-		wl_list_remove(&mirror->link);
-		free(mirror);
+		thumbnail_mirror_destroy(mirror);
 	}
 	wl_list_remove(&entry->link);
 	free(entry);
@@ -1940,10 +2011,7 @@ wex_window_drop_thumbnails(struct wex_window *win)
 			thumbnail_entry_destroy(entry);
 		}
 	}
-	if (win->thumbnail_tree) {
-		wlr_scene_node_destroy(&win->thumbnail_tree->node);
-		win->thumbnail_tree = NULL;
-	}
+	scene_tree_destroy_and_null(&win->thumbnail_tree);
 }
 
 static void
@@ -2090,7 +2158,7 @@ manager_apply_peek_to_view(struct wex_window_manager *manager, struct view *view
 	struct view *root = wex_scene_group_root(view);
 
 	if (!manager->peek_active) {
-		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
+		scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
 		return;
 	}
 
@@ -2116,14 +2184,8 @@ manager_apply_peek_to_view(struct wex_window_manager *manager, struct view *view
 		}
 	}
 
-	if (always_show) {
-		wlr_scene_node_set_enabled(&view->scene_tree->node, true);
-	} else if (show_if_mapped) {
-		wlr_scene_node_set_enabled(&view->scene_tree->node, view->mapped && !view->minimized);
-	} else {
-		/* 4. Otherwise, hide the view */
-		wlr_scene_node_set_enabled(&view->scene_tree->node, false);
-	}
+	bool visible = always_show || (show_if_mapped && view->mapped && !view->minimized);
+	scene_node_set_enabled(&view->scene_tree->node, visible);
 }
 
 static void
