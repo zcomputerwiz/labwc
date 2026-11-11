@@ -8,6 +8,8 @@
 
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <strings.h>
 #include <wlr/backend/drm.h>
 #include <wlr/backend/wayland.h>
@@ -390,6 +392,40 @@ add_output_to_layout(struct server *server, struct output *output)
 	}
 }
 
+/*
+ * WineExplorer: the size an output starts at, from WEX_OUTPUT_MODE
+ * ("<width>x<height>"). Its Wayland session sets 640x480 in Safe Mode, as
+ * XP's basic display driver starts there. The output's own mode of that size
+ * nearest 60 Hz; NULL when the variable is unset or malformed, or when the
+ * output offers no such mode (then the usual choice applies).
+ */
+static struct wlr_output_mode *
+wex_output_mode(struct wlr_output *wlr_output)
+{
+	const char *value = getenv("WEX_OUTPUT_MODE");
+	int width, height;
+	char extra;
+	if (!value || sscanf(value, "%dx%d%c", &width, &height, &extra) != 2
+			|| width <= 0 || height <= 0) {
+		return NULL;
+	}
+	struct wlr_output_mode *mode, *best = NULL;
+	wl_list_for_each(mode, &wlr_output->modes, link) {
+		if (mode->width != width || mode->height != height) {
+			continue;
+		}
+		if (!best || abs(mode->refresh - 60000)
+				< abs(best->refresh - 60000)) {
+			best = mode;
+		}
+	}
+	if (!best) {
+		wlr_log(WLR_INFO, "%s offers no %dx%d mode (WEX_OUTPUT_MODE)",
+			wlr_output->name, width, height);
+	}
+	return best;
+}
+
 static bool
 output_test_auto(struct wlr_output *wlr_output, struct wlr_output_state *state,
 		bool is_client_request)
@@ -420,6 +456,16 @@ output_test_auto(struct wlr_output *wlr_output, struct wlr_output_state *state,
 				state->custom_mode.refresh);
 		}
 		return wlr_output_test_state(wlr_output, state);
+	}
+
+	struct wlr_output_mode *wex_mode = wex_output_mode(wlr_output);
+	if (wex_mode) {
+		wlr_log(WLR_DEBUG, "testing WEX_OUTPUT_MODE %dx%d@%d",
+			wex_mode->width, wex_mode->height, wex_mode->refresh);
+		wlr_output_state_set_mode(state, wex_mode);
+		if (wlr_output_test_state(wlr_output, state)) {
+			return true;
+		}
 	}
 
 	/*
