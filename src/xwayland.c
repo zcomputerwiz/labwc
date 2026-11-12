@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 #include <wlr/xwayland.h>
 #include "common/array.h"
 #include "common/macros.h"
@@ -1277,11 +1287,130 @@ xwayland_reset_cursor(struct server *server)
 	}
 }
 
+/*
+ * Xwayland shares the X display's listening sockets, while the display's
+ * lock file (/tmp/.X<n>-lock) names this compositor, and wlroots removes the
+ * lock as it destroys the server, without waiting for Xwayland. When a login
+ * session ends, every process in it is stopped at once. If the compositor
+ * removed the lock and exited while Xwayland still ran, a display manager
+ * starting its greeter's X server found the display free (LightDM only checks
+ * the lock), and that server could not listen on it: LightDM gave up the seat
+ * and exited (WineExplorer, 2026-11-12). End Xwayland first, so the lock goes
+ * only once the display is free. SIGCONT as systemd sends it, for a stopped
+ * Xwayland. At most a second.
+ *
+ * Xwayland is found by its command line (Xwayland DISPLAY ..., this user's):
+ * its Wayland connection is a socket pair made here, whose credentials name
+ * this process, and wlroots may start it through an intermediate fork.
+ */
+static pid_t
+xwayland_find_server(const char *display_name)
+{
+	DIR *proc = opendir("/proc");
+	struct dirent *entry;
+	pid_t found = 0;
+
+	if (!proc) {
+		return 0;
+	}
+	while (!found && (entry = readdir(proc))) {
+		char path[64], cmdline[256];
+		struct stat st;
+		char *end, *arg1, *name;
+		ssize_t len;
+		int fd;
+		long pid = strtol(entry->d_name, &end, 10);
+
+		if (*end || pid <= 0 || pid == getpid()) {
+			continue;
+		}
+		snprintf(path, sizeof(path), "/proc/%ld/cmdline", pid);
+		if (stat(path, &st) < 0 || st.st_uid != getuid()) {
+			continue;
+		}
+		fd = open(path, O_RDONLY | O_CLOEXEC);
+		if (fd < 0) {
+			continue;
+		}
+		len = read(fd, cmdline, sizeof(cmdline) - 1);
+		close(fd);
+		if (len <= 0) {
+			continue;
+		}
+		cmdline[len] = '\0';
+		arg1 = cmdline + strlen(cmdline) + 1;
+		if (arg1 >= cmdline + len) {
+			continue;
+		}
+		name = strrchr(cmdline, '/');
+		name = name ? name + 1 : cmdline;
+		if (!strcmp(name, "Xwayland") && !strcmp(arg1, display_name)) {
+			found = (pid_t)pid;
+		}
+	}
+	closedir(proc);
+	return found;
+}
+
+static bool
+process_ended(pid_t pid)
+{
+	char path[64], stat_line[256], *state;
+	ssize_t len;
+	int fd;
+
+	waitpid(pid, NULL, WNOHANG);	/* when it is a child of ours */
+	if (kill(pid, 0) < 0 && errno == ESRCH) {
+		return true;
+	}
+	/* a zombie has closed its sockets */
+	snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return true;
+	}
+	len = read(fd, stat_line, sizeof(stat_line) - 1);
+	close(fd);
+	if (len <= 0) {
+		return true;
+	}
+	stat_line[len] = '\0';
+	state = strrchr(stat_line, ')');
+	return state && state[1] == ' ' && (state[2] == 'Z' || state[2] == 'X');
+}
+
+static void
+xwayland_end_server(struct wlr_xwayland *xwayland)
+{
+	struct timespec tick = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+	pid_t pid;
+
+	if (!xwayland || !xwayland->server || !xwayland->server->client
+			|| !xwayland->display_name || !*xwayland->display_name) {
+		return;
+	}
+	pid = xwayland_find_server(xwayland->display_name);
+	if (pid <= 0) {
+		return;
+	}
+	kill(pid, SIGTERM);
+	kill(pid, SIGCONT);
+	for (int i = 0; i < 100; i++) {
+		if (process_ended(pid)) {
+			wlr_log(WLR_DEBUG, "Xwayland (pid %d) ended", (int)pid);
+			return;
+		}
+		nanosleep(&tick, NULL);
+	}
+	wlr_log(WLR_INFO, "Xwayland (pid %d) still runs after a second", (int)pid);
+}
+
 void
 xwayland_server_finish(struct server *server)
 {
 	struct wlr_xwayland *xwayland = server->xwayland;
 	if (xwm_server == server) xwm_server = NULL;
+	xwayland_end_server(xwayland);
 	/*
 	 * Reset server->xwayland to NULL first to prevent callbacks (like
 	 * server_global_filter) from accessing it as it is destroyed
