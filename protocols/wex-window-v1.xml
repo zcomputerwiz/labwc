@@ -29,7 +29,7 @@
     for shell components (taskbars), and activation without tokens.
   </description>
 
-  <interface name="wex_window_manager_v1" version="14">
+  <interface name="wex_window_manager_v1" version="15">
     <description summary="manager interface for privileged window controls">
       Allows obtaining a wex_window_v1 interface for an xdg_toplevel.
       Only advertised to privileged clients on the wex-shell socket.
@@ -166,6 +166,63 @@
       <arg name="sec_hi" type="uint"/>
       <arg name="sec_lo" type="uint"/>
       <arg name="nsec" type="uint"/>
+    </event>
+
+    <enum name="shell_key_modifiers" bitfield="true" since="15">
+      <description summary="modifiers of a shell key combination">
+        The values of the X11 and wlroots modifier masks.
+      </description>
+      <entry name="shift" value="1"/>
+      <entry name="ctrl" value="4"/>
+      <entry name="alt" value="8"/>
+      <entry name="logo" value="64"/>
+    </enum>
+    <request name="set_shell_keys" since="15">
+      <description summary="the key combinations that belong to the shell">
+        Privileged clients only. Replaces the list of key combinations the
+        shell takes from native programs (the Windows key, Ctrl+Esc, Alt+Tab,
+        Alt+F4), as an X11 window manager takes them with passive key grabs.
+
+        While a client that is not connected to the private endpoint has the
+        keyboard and the session is not locked, a press that matches a listed
+        combination goes to this manager as a shell_key event instead of to
+        the client, and so does every key after it until that key is released
+        (with hold_keyboard, until release_keyboard). Clients on the private
+        endpoint, the Wine programs, keep their keys. Modifier state still
+        reaches the focused client through wl_keyboard.modifiers.
+
+        The array holds records of 8 bytes in native byte order:
+          uint32 keysym     the key's keysym without modifiers (level 1)
+          uint32 modifiers  shell_key_modifiers that must be held exactly
+                            (Caps Lock and Num Lock do not count), or
+                            0xffffffff for the key with any modifiers
+        At most 32 records are used. An empty array removes the list; it also
+        ends with this manager object.
+      </description>
+      <arg name="keys" type="array"/>
+    </request>
+    <request name="hold_keyboard" since="15">
+      <description summary="keep sending every key to the shell">
+        While keys go to the shell (after a shell_key press), they go on doing
+        so until release_keyboard, also once the key that started it is
+        released. The shell's Alt+Tab holds the keyboard until Alt is released.
+      </description>
+    </request>
+    <request name="release_keyboard" since="15">
+      <description summary="stop holding the keyboard">
+        Ends hold_keyboard. Keys go to the focused client again once the key
+        that started the sending is no longer down.
+      </description>
+    </request>
+    <event name="shell_key" since="15">
+      <description summary="a key taken from a native program">
+        keysym is the key's keysym without modifiers (level 1), modifiers the
+        shell_key_modifiers held when the key changed state, and state a
+        wl_keyboard.key_state (1 pressed, 0 released).
+      </description>
+      <arg name="keysym" type="uint"/>
+      <arg name="modifiers" type="uint"/>
+      <arg name="state" type="uint"/>
     </event>
   </interface>
 

@@ -507,6 +507,25 @@ handle_compositor_keybindings(struct keyboard *keyboard,
 	key_state_set_pressed(event->keycode,
 		event->state == WL_KEYBOARD_KEY_STATE_PRESSED);
 
+	/*
+	 * The shell's key combinations (wex_window_manager_v1 v15): while a
+	 * native client has the keyboard, a listed combination and every key
+	 * after it until it ends go to Explorer, as X11 passive grabs give them
+	 * to its window manager, never to a locked seat.
+	 */
+	if (!locked && wex_window_manager_shell_key(server->wex_window_manager,
+			seat->seat->keyboard_state.focused_surface, event->keycode,
+			keyinfo.raw.nr_syms ? keyinfo.raw.syms[0] : XKB_KEY_NoSymbol,
+			keyinfo.modifiers,
+			event->state == WL_KEYBOARD_KEY_STATE_PRESSED)) {
+		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			key_state_store_pressed_key_as_bound(event->keycode);
+		} else {
+			key_state_bound_key_remove(event->keycode);
+		}
+		return true;
+	}
+
 	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
 		if (cur_keybind && cur_keybind->on_release) {
 			key_state_bound_key_remove(event->keycode);
@@ -553,8 +572,10 @@ handle_compositor_keybindings(struct keyboard *keyboard,
 	 * switcher, not labwc's cycle action or the terminal's input. Transfer
 	 * physical focus to the already-associated Wine frame, then deliver the
 	 * key through the ordinary wl_keyboard path. Never redirect a locked seat
-	 * or an unrelated native window on a stock labwc session. */
-	if (!locked && (event->keycode == KEY_LEFTMETA || event->keycode == KEY_RIGHTMETA ||
+	 * or an unrelated native window on a stock labwc session. A shell that
+	 * sets its keys (v15, above) takes them instead; this is for older ones. */
+	if (!locked && !wex_window_manager_has_shell_keys(server->wex_window_manager) &&
+			(event->keycode == KEY_LEFTMETA || event->keycode == KEY_RIGHTMETA ||
 			(event->keycode == KEY_TAB && (keyinfo.modifiers & WLR_MODIFIER_ALT)))) {
 		struct wlr_surface *surface = seat->seat->keyboard_state.focused_surface;
 		struct view *focused = surface ? view_from_wlr_surface(surface) : NULL;

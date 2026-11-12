@@ -15,6 +15,7 @@ struct wex_scene;
 struct wlr_box;
 struct wlr_scene_tree;
 struct wex_corner_piece;
+struct wlr_surface;
 
 struct wex_window_manager {
 	struct wl_global *global;
@@ -34,6 +35,15 @@ struct wex_window_manager {
 	size_t peek_keep_count;
 	struct wl_resource *peek_resource;
 	struct wl_client *peek_client;
+
+	/* Shell keys (v15): combinations taken from native clients for the shell */
+	struct wl_resource *shell_keys_resource; /* owner of the list */
+	uint32_t shell_keys[32][2];              /* keysym, modifiers */
+	size_t shell_keys_count;
+	bool shell_keys_sending;                 /* keys go to the shell */
+	bool shell_keys_held;                    /* hold_keyboard */
+	bool shell_keys_start_down;
+	uint32_t shell_keys_start;               /* the keycode that started the sending */
 };
 
 struct wex_window {
@@ -84,6 +94,11 @@ void wex_window_manager_finish(struct server *server);
 void wex_window_on_view_destroy(struct wex_window *win);
 void wex_foreign_window_update(struct view *view);
 bool wex_client_is_privileged(const struct wl_client *client, struct server *server);
+/* Shell keys (v15). keyboard.c, for each key while the seat is not locked: true when the key went to the shell, so
+ * the focused client must not get it. keysym: without modifiers (level 1); modifiers: WLR_MODIFIER_* held. */
+bool wex_window_manager_shell_key(struct wex_window_manager *manager, struct wlr_surface *focused,
+	uint32_t keycode, uint32_t keysym, uint32_t modifiers, bool pressed);
+bool wex_window_manager_has_shell_keys(struct wex_window_manager *manager);
 struct wex_scene *wex_scene_create(struct wex_window *frame, struct view *native,
 	const struct wlr_box *client);
 void wex_scene_destroy(struct wex_scene *scene);

@@ -11,6 +11,7 @@
 #include "wex-scene.h"
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_keyboard.h>
 #include <wlr/util/transform.h>
 #include <wlr/util/log.h>
 #include "protocols/wex-window.h"
@@ -377,6 +378,11 @@ handle_manager_get_window(struct wl_client *client,
     if (version >= 2) wex_window_v1_send_handle(win->resource, win->handle);
 }
 
+static void handle_manager_set_shell_keys(struct wl_client *client, struct wl_resource *resource,
+	struct wl_array *keys);
+static void handle_manager_hold_keyboard(struct wl_client *client, struct wl_resource *resource);
+static void handle_manager_release_keyboard(struct wl_client *client, struct wl_resource *resource);
+
 static const struct wex_window_manager_v1_interface wex_manager_impl = {
 	.destroy = handle_manager_destroy,
 	.get_window = handle_manager_get_window,
@@ -385,6 +391,9 @@ static const struct wex_window_manager_v1_interface wex_manager_impl = {
 	.set_effects = handle_manager_set_effects,
 	.set_thumbnails = handle_manager_set_thumbnails,
 	.set_peek = handle_manager_set_peek,
+	.set_shell_keys = handle_manager_set_shell_keys,
+	.hold_keyboard = handle_manager_hold_keyboard,
+	.release_keyboard = handle_manager_release_keyboard,
 };
 
 static void
@@ -2448,6 +2457,12 @@ handle_manager_resource_destroy(struct wl_listener *listener, void *data)
 		manager_clear_all_thumbnails(manager);
 		manager->thumbnail_resource = NULL;
 	}
+	if (manager->shell_keys_resource == bound->resource) {
+		manager->shell_keys_resource = NULL;
+		manager->shell_keys_count = 0;
+		manager->shell_keys_sending = false;
+		manager->shell_keys_held = false;
+	}
 	wl_list_remove(&bound->destroy.link);
 	wl_list_remove(&bound->link);
 	free(bound);
@@ -2508,6 +2523,100 @@ wex_window_manager_on_output_commit(struct wex_window_manager *manager, const st
 			wex_window_manager_v1_send_frame(bound->resource, frame_lo, sec_hi, sec_lo, nsec);
 		}
 	}
+}
+
+/* Shell keys (v15): the shell's combinations, taken from native clients as X11 passive key grabs take them */
+#define SHELL_KEY_ANY_MODIFIERS 0xffffffffu
+#define SHELL_KEY_MODIFIERS (WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO)
+
+static void
+handle_manager_set_shell_keys(struct wl_client *client, struct wl_resource *resource, struct wl_array *keys)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (!manager || !wex_client_is_privileged(client, manager->server)) {
+		return;
+	}
+	manager->shell_keys_count = 0;
+	const uint32_t *record = keys->data;
+	size_t records = keys->size / (2 * sizeof(uint32_t));
+	for (size_t i = 0; i < records && manager->shell_keys_count < 32; i++) {
+		manager->shell_keys[manager->shell_keys_count][0] = record[2 * i];
+		manager->shell_keys[manager->shell_keys_count][1] = record[2 * i + 1];
+		manager->shell_keys_count++;
+	}
+	manager->shell_keys_resource = manager->shell_keys_count ? resource : NULL;
+	manager->shell_keys_sending = false;
+	manager->shell_keys_held = false;
+	wlr_log(WLR_DEBUG, "shell keys: %zu combinations", manager->shell_keys_count);
+}
+
+static void
+handle_manager_hold_keyboard(struct wl_client *client, struct wl_resource *resource)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (manager && manager->shell_keys_resource == resource && manager->shell_keys_sending) {
+		manager->shell_keys_held = true;
+	}
+}
+
+static void
+handle_manager_release_keyboard(struct wl_client *client, struct wl_resource *resource)
+{
+	struct wex_window_manager *manager = wl_resource_get_user_data(resource);
+	if (!manager || manager->shell_keys_resource != resource) {
+		return;
+	}
+	manager->shell_keys_held = false;
+	if (!manager->shell_keys_start_down) {
+		manager->shell_keys_sending = false;
+	}
+}
+
+bool
+wex_window_manager_has_shell_keys(struct wex_window_manager *manager)
+{
+	return manager && manager->shell_keys_resource;
+}
+
+bool
+wex_window_manager_shell_key(struct wex_window_manager *manager, struct wlr_surface *focused,
+		uint32_t keycode, uint32_t keysym, uint32_t modifiers, bool pressed)
+{
+	if (!manager || !manager->shell_keys_resource) {
+		return false;
+	}
+	modifiers &= SHELL_KEY_MODIFIERS;
+	if (!manager->shell_keys_sending) {
+		/* only a press of a listed combination, while a native client has the keyboard */
+		if (!pressed || !focused || !focused->resource) {
+			return false;
+		}
+		if (wex_client_is_privileged(wl_resource_get_client(focused->resource), manager->server)) {
+			return false;
+		}
+		bool listed = false;
+		for (size_t i = 0; i < manager->shell_keys_count && !listed; i++) {
+			listed = manager->shell_keys[i][0] == keysym &&
+				(manager->shell_keys[i][1] == SHELL_KEY_ANY_MODIFIERS ||
+				manager->shell_keys[i][1] == modifiers);
+		}
+		if (!listed) {
+			return false;
+		}
+		manager->shell_keys_sending = true;
+		manager->shell_keys_held = false;
+		manager->shell_keys_start = keycode;
+		manager->shell_keys_start_down = true;
+	}
+	wex_window_manager_v1_send_shell_key(manager->shell_keys_resource, keysym, modifiers,
+		pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+	if (!pressed && keycode == manager->shell_keys_start) {
+		manager->shell_keys_start_down = false;
+	}
+	if (!manager->shell_keys_start_down && !manager->shell_keys_held) {
+		manager->shell_keys_sending = false;
+	}
+	return true;
 }
 
 static const struct wex_window_v1_interface wex_window_impl = {
@@ -2637,7 +2746,7 @@ wex_window_manager_init(struct server *server)
 	wl_list_init(&manager->manager_resources);
 
 	manager->global = wl_global_create(server->wl_display,
-		&wex_window_manager_v1_interface, 14, manager, handle_wex_manager_bind);
+		&wex_window_manager_v1_interface, 15, manager, handle_wex_manager_bind);
 	if (!manager->global) {
 		wlr_log(WLR_ERROR, "failed to create wex_window_manager_v1 global");
 		free(manager);
