@@ -269,6 +269,35 @@ protocol_is_privileged(const struct wl_interface *iface)
 	return false;
 }
 
+/*
+ * WineExplorer: the protocols that make a client part of the shell. Panels and desktop layers, the lock screen,
+ * display configuration and control of other clients' windows belong to Explorer, so only clients of the private
+ * wex-shell socket (Explorer and the Windows programs it starts) see them. Native programs on the ordinary socket
+ * and sandboxed ones do not. Protocols that read (screen capture, the window list, idle state, the clipboard) or
+ * help input (input methods, virtual keyboards and pointers) stay open: XP lets any program read the screen and
+ * the windows, and input methods and clipboard managers are native programs.
+ */
+static bool
+protocol_is_shell_only(const struct wl_interface *iface)
+{
+	static const char * const shell_only[] = {
+		"zwlr_layer_shell_v1",
+		"ext_session_lock_manager_v1",
+		"zwlr_output_manager_v1",
+		"zwlr_output_power_manager_v1",
+		"zwlr_gamma_control_manager_v1",
+		"zwlr_foreign_toplevel_manager_v1",
+		"zcosmic_workspace_manager_v1",
+		"ext_workspace_manager_v1",
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(shell_only); i++) {
+		if (!strcmp(iface->name, shell_only[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool
 allow_for_sandbox(const struct wlr_security_context_v1_state *security_state,
 		const struct wl_interface *iface)
@@ -353,6 +382,9 @@ server_global_filter(const struct wl_client *client, const struct wl_global *glo
 
 	if (server->wex_window_manager && global == server->wex_window_manager->global) {
 		return wex_client_is_privileged(client, server);
+	}
+	if (protocol_is_shell_only(iface) && !wex_client_is_privileged(client, server)) {
+		return false;
 	}
 
 	/* Do not allow security_context_manager_v1 to clients with a security context attached */

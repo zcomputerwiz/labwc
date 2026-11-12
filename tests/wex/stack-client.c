@@ -38,10 +38,100 @@ wait_loop(struct wex_context *ctx, int seconds)
 	}
 }
 
+/* WineExplorer: the protocols that only the private socket's clients see (server.c, protocol_is_shell_only) */
+static const char * const shell_only[] = {
+	"zwlr_layer_shell_v1",
+	"ext_session_lock_manager_v1",
+	"zwlr_output_manager_v1",
+	"zwlr_output_power_manager_v1",
+	"zwlr_gamma_control_manager_v1",
+	"zwlr_foreign_toplevel_manager_v1",
+	"zcosmic_workspace_manager_v1",
+	"ext_workspace_manager_v1",
+};
+#define SHELL_ONLY_COUNT (sizeof(shell_only) / sizeof(shell_only[0]))
+
+static void
+seen_global(void *data, struct wl_registry *registry, uint32_t name, const char *interface,
+		uint32_t version)
+{
+	bool *seen = data;
+	(void)registry;
+	(void)name;
+	(void)version;
+	for (size_t i = 0; i < SHELL_ONLY_COUNT; i++) {
+		if (!strcmp(interface, shell_only[i])) {
+			seen[i] = true;
+		}
+	}
+}
+
+static void
+seen_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+	(void)data;
+	(void)registry;
+	(void)name;
+}
+
+static const struct wl_registry_listener seen_listener = {
+	.global = seen_global,
+	.global_remove = seen_global_remove,
+};
+
+/* which of the shell-only protocols a client of this socket is offered */
+static bool
+list_shell_only(const char *sock, bool seen[SHELL_ONLY_COUNT])
+{
+	memset(seen, 0, SHELL_ONLY_COUNT * sizeof(bool));
+	struct wl_display *display = wl_display_connect(sock);
+	if (!display) {
+		return false;
+	}
+	struct wl_registry *registry = wl_display_get_registry(display);
+	wl_registry_add_listener(registry, &seen_listener, seen);
+	bool ok = wl_display_roundtrip(display) >= 0;
+	wl_registry_destroy(registry);
+	wl_display_disconnect(display);
+	return ok;
+}
+
+static int
+check_shell_only(const char *normal_sock, const char *priv_sock)
+{
+	bool normal[SHELL_ONLY_COUNT], priv[SHELL_ONLY_COUNT];
+	int failed = 0;
+
+	if (!list_shell_only(normal_sock, normal) || !list_shell_only(priv_sock, priv)) {
+		fprintf(stderr, "ERROR: cannot list the globals of '%s' and '%s'\n", normal_sock, priv_sock);
+		return 1;
+	}
+	for (size_t i = 0; i < SHELL_ONLY_COUNT; i++) {
+		if (normal[i]) {
+			fprintf(stderr, "ERROR: %s is advertised on standard socket '%s'\n", shell_only[i],
+				normal_sock);
+			failed = 1;
+		}
+		if (!priv[i]) {
+			fprintf(stderr, "ERROR: %s is missing on privileged socket '%s'\n", shell_only[i], priv_sock);
+			failed = 1;
+		}
+	}
+	if (!failed) {
+		printf("[stack-client] SUCCESS: %zu shell-only protocols only on privileged socket '%s'\n",
+			SHELL_ONLY_COUNT, priv_sock);
+	}
+	return failed;
+}
+
 static int
 do_check_sockets(const char *normal_sock, const char *priv_sock)
 {
 	printf("[stack-client] checking socket privileges...\n");
+
+	if (check_shell_only(normal_sock, priv_sock)) {
+		return 1;
+	}
 
 	struct wex_context ctx_normal;
 	if (!wex_context_init(&ctx_normal, normal_sock)) {

@@ -393,7 +393,7 @@ handle_request_configure(struct wl_listener *listener, void *data)
 		/* Honor client configure requests for floating views */
 		struct wlr_box box = {.x = event->x, .y = event->y,
 			.width = event->width, .height = event->height};
-		view_adjust_size(view, &box.width, &box.height);
+		view_adjust_requested_size(view, &box.width, &box.height);
 		xwayland_view_configure(view, box);
 	} else {
 		/*

@@ -44,6 +44,10 @@ cat << 'EOF' > "$CONFIG_DIR/rc.xml"
   </placement>
 </labwc_config>
 EOF
+# the compositor's X display, for the XWayland checks (the autostart runs with the compositor's DISPLAY)
+cat << EOF > "$CONFIG_DIR/autostart"
+echo "\$DISPLAY" > "$XDG_RUNTIME_DIR/xdisplay"
+EOF
 
 echo "Starting labwc compositor in headless mode (1280x800)..."
 "$BUILD_DIR/labwc" -C "$CONFIG_DIR" > "$XDG_RUNTIME_DIR/labwc.log" 2>&1 &
@@ -76,8 +80,8 @@ fi
 echo "Compositor is ready. Sockets: wayland-0 and wex-shell-0 active."
 sleep 0.5
 
-# Configure output to 1280x800 as specified in work order
-wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
+# Configure output to 1280x800 as specified in work order (output management is for the private socket only)
+WAYLAND_DISPLAY=wex-shell-0 wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
 sleep 0.5
 
 TESTS_PASSED=0
@@ -102,6 +106,22 @@ run_check() {
 # TEST 1: Socket Privileges & Isolation
 run_check "Socket Isolation (wex_window_manager_v1 privileged)" \
     "$SCRIPT_DIR/stack-client" --scenario check-sockets --socket wex-shell-0 --normal-socket wayland-0
+
+# TEST 1b: an X client's own size request is not snapped to its older size hints. xterm with a scroll bar and a
+# bitmap font (WineExplorer's recovery console) in a UTF-8 locale asks for its final size before it updates the base
+# size in its hints (the scroll bar's border); snapped, 80 columns became 79.
+if command -v xterm >/dev/null 2>&1 && ls /usr/share/fonts/X11/misc/7x13.pcf* >/dev/null 2>&1; then
+    for i in {1..50}; do [ -s "$XDG_RUNTIME_DIR/xdisplay" ] && break; sleep 0.1; done
+    rm -f "$XDG_RUNTIME_DIR/xterm-size"
+    DISPLAY="$(cat "$XDG_RUNTIME_DIR/xdisplay")" LANG=C.UTF-8 LC_ALL=C.UTF-8 timeout 30 xterm -bw 0 \
+        -fn -misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1 -geometry 80x24+0+0 -sb -rightbar \
+        -e sh -c "sleep 2; stty size > '$XDG_RUNTIME_DIR/xterm-size'" || true
+    echo "xterm size: $(cat "$XDG_RUNTIME_DIR/xterm-size" 2>/dev/null || echo none)"
+    run_check "XWayland: xterm in a UTF-8 locale keeps the 80 columns it asked for" \
+        grep -qx '24 80' "$XDG_RUNTIME_DIR/xterm-size"
+else
+    echo " [SKIP] XWayland xterm size: needs xterm and xfonts-base"
+fi
 
 # Version 2 keeps the v1 clients above and below unchanged.
 run_check "Shared handles across three clients and layer/lifetime invariants" \

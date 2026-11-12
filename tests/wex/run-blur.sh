@@ -88,7 +88,7 @@ sleep 0.5
 
 # Configure output to 1280x800 if wlr-randr is available
 if command -v wlr-randr >/dev/null 2>&1; then
-    wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
+    WAYLAND_DISPLAY=wex-shell-0 wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
 fi
 sleep 0.5
 

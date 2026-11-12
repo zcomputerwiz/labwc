@@ -78,7 +78,7 @@ echo "Compositor is ready. Sockets: wayland-0 and wex-shell-0 active."
 sleep 0.5
 
 # Configure output to 1280x800 as specified in work order
-wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
+WAYLAND_DISPLAY=wex-shell-0 wlr-randr --output HEADLESS-1 --custom-mode 1280x800 || true
 sleep 0.5
 
 BARRIER_DIR="$XDG_RUNTIME_DIR/barriers"

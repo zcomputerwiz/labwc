@@ -626,6 +626,7 @@ void view_set_shade(struct view *view, bool shaded);
 
 struct view_size_hints view_get_size_hints(struct view *view);
 void view_adjust_size(struct view *view, int *w, int *h);
+void view_adjust_requested_size(struct view *view, int *w, int *h);
 
 void view_evacuate_region(struct view *view);
 void view_on_output_destroy(struct view *view);

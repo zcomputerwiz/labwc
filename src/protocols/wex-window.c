@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -311,12 +312,23 @@ wex_client_is_privileged(const struct wl_client *client, struct server *server)
 	}
 	struct sockaddr_un addr = { 0 };
 	socklen_t len = sizeof(addr);
-	if (getsockname(fd, (struct sockaddr *)&addr, &len) == 0) {
-		if (strstr(addr.sun_path, server->wex_socket_name)) {
-			return true;
+	if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0 || len <= offsetof(struct sockaddr_un, sun_path)) {
+		return false;
+	}
+	addr.sun_path[sizeof(addr.sun_path) - 1] = 0;
+	/*
+	 * The whole name must match: a socket name (wl_display_add_socket) is the last part of the path, an absolute
+	 * one the path itself. A part match would let the ordinary socket count as private when the runtime directory's
+	 * path contains the private socket's name.
+	 */
+	const char *name = addr.sun_path;
+	if (!strchr(server->wex_socket_name, '/')) {
+		const char *slash = strrchr(name, '/');
+		if (slash) {
+			name = slash + 1;
 		}
 	}
-	return false;
+	return !strcmp(name, server->wex_socket_name);
 }
 
 static void

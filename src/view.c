@@ -767,6 +767,30 @@ view_adjust_size(struct view *view, int *w, int *h)
 	*h = MAX(*h, hints.min_height);
 }
 
+void
+view_adjust_requested_size(struct view *view, int *w, int *h)
+{
+	assert(view);
+	struct view_size_hints hints = view_get_size_hints(view);
+
+	/*
+	 * WineExplorer: a size the client asks for itself is taken as an X server without a window manager takes it,
+	 * not snapped to the size increments; only the minimum applies. xterm in a UTF-8 locale asks for its final size
+	 * before it updates the base size in its hints, and snapping to the old hints made an 80-column xterm 79
+	 * columns wide. Interactive resizes still snap (view_adjust_size).
+	 */
+	substitute_nonzero(&hints.min_width, &hints.base_width);
+	substitute_nonzero(&hints.min_height, &hints.base_height);
+	if (hints.min_width < 1) {
+		hints.min_width = view_get_min_width();
+	}
+	if (hints.min_height < 1) {
+		hints.min_height = LAB_MIN_VIEW_HEIGHT;
+	}
+	*w = MAX(*w, hints.min_width);
+	*h = MAX(*h, hints.min_height);
+}
+
 static void
 _minimize(struct view *view, bool minimized)
 {
