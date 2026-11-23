@@ -4,6 +4,7 @@
 #include <strings.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/backend/headless.h>
+#include <wlr/backend/multi.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
@@ -399,10 +400,20 @@ new_tablet_pad(struct seat *seat, struct wlr_input_device *dev)
 }
 
 static void
+check_headless_only(struct wlr_backend *backend, void *data)
+{
+	bool *headless_only = data;
+	if (!wlr_backend_is_headless(backend)) {
+		*headless_only = false;
+	}
+}
+
+static void
 seat_update_capabilities(struct seat *seat)
 {
 	struct input *input = NULL;
 	uint32_t caps = 0;
+	bool headless_only = true;
 
 	wl_list_for_each(input, &seat->inputs, link) {
 		switch (input->wlr_input_device->type) {
@@ -420,7 +431,17 @@ seat_update_capabilities(struct seat *seat)
 			break;
 		}
 	}
-	if (seat->server->headless.backend || wl_list_empty(&seat->inputs)) {
+	/*
+	 * A headless-only session (WLR_BACKENDS=headless, as in the wex
+	 * tests) has no backend that can ever produce input devices, so
+	 * advertise pointer and keyboard there for clients that wait for
+	 * focus or pointer enter before virtual devices exist. Every other
+	 * session also contains the headless backend (for virtual outputs)
+	 * and advertises only what its devices provide.
+	 */
+	wlr_multi_for_each_backend(seat->server->backend,
+		check_headless_only, &headless_only);
+	if (headless_only) {
 		caps |= WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	}
 	wlr_seat_set_capabilities(seat->seat, caps);
