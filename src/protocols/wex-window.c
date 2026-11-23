@@ -373,13 +373,18 @@ handle_manager_get_window(struct wl_client *client,
         wl_client_post_implementation_error(client, "cannot generate window handle");
         return;
     }
+	win->resource = wl_resource_create(client,
+		&wex_window_v1_interface, version, id);
+	if (!win->resource) {
+		free(win);
+		wl_client_post_no_memory(client);
+		return;
+	}
     win->manager = manager;
 	win->view = view;
 	view->wex_window = win;
 	view_set_ssd_mode(view, LAB_SSD_MODE_NONE);
 
-	win->resource = wl_resource_create(client,
-		&wex_window_v1_interface, version, id);
 	wl_resource_set_implementation(win->resource, &wex_window_impl, win, wex_window_resource_destroy);
 	wl_list_insert(manager->windows.prev, &win->link);
 	wl_list_init(&win->surface_commit.link);
@@ -1362,7 +1367,10 @@ window_restack_decorations(struct wex_window *win)
 void
 wex_window_update_effects(struct wex_window *win)
 {
-	if (!win || !win->view || !win->view->surface) {
+	if (!win) {
+		return;
+	}
+	if (!win->view || !win->view->surface) {
 		drop_corner_pieces(win);
 		drop_effects(win);
 		return;
@@ -2141,7 +2149,17 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		return;
 	}
 
-	struct thumbnail_piece_layout layouts[num_surfaces];
+	/*
+	 * The source client decides how many subsurfaces it has, so the
+	 * layouts go on the heap, not the stack.
+	 */
+	struct thumbnail_piece_layout *layouts = calloc(num_surfaces, sizeof(*layouts));
+	if (!layouts) {
+		thumbnail_entry_disable_all(entry);
+		thumbnail_prune_unseen(entry);
+		wl_array_release(&surfaces);
+		return;
+	}
 	thumbnail_layout(entry, &surfaces, ox, oy, layouts);
 
 	uint32_t op = entry->opacity > 255 ? 255 : entry->opacity;
@@ -2170,6 +2188,7 @@ apply_thumbnail_geometry(struct wex_thumbnail_entry *entry)
 		thumbnail_apply_piece(mirror, layout, opacity);
 	}
 
+	free(layouts);
 	thumbnail_prune_unseen(entry);
 	wl_array_release(&surfaces);
 }
