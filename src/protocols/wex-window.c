@@ -1662,12 +1662,6 @@ wex_window_update_effects(struct wex_window *win)
 	}
 }
 
-void
-wex_window_apply_corner_radius(struct wex_window *win)
-{
-	wex_window_update_effects(win);
-}
-
 static void
 handle_window_surface_commit(struct wl_listener *listener, void *data)
 {

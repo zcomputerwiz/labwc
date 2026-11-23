@@ -81,7 +81,6 @@ struct wex_window {
 	struct wlr_scene_tree *thumbnail_tree;
 };
 
-void wex_window_apply_corner_radius(struct wex_window *win);
 void wex_window_update_effects(struct wex_window *win);
 void wex_window_drop_thumbnails(struct wex_window *win);
 /* when: the display time of a present event, NULL for the time of the commit */
