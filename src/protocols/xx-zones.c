@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -23,23 +25,29 @@ static const struct xx_zone_item_v1_interface zone_item_impl;
 static void zone_resource_destroy(struct wl_resource *resource);
 static void zone_item_resource_destroy(struct wl_resource *resource);
 
+/*
+ * A handle gives any client that knows it the zone (get_zone_from_handle),
+ * including the desktop-wide zones of privileged clients, so it must not be
+ * guessable. Without random bytes the zone gets no handle: it is still usable
+ * but cannot be looked up.
+ */
 static char *
 generate_zone_token(void)
 {
 	char token[37];
 	uint8_t rand_bytes[16];
-	FILE *f = fopen("/dev/urandom", "rb");
-	if (f) {
-		if (fread(rand_bytes, 1, 16, f) != 16) {
-			for (int i = 0; i < 16; i++) {
-				rand_bytes[i] = (uint8_t)rand();
+	size_t len = 0;
+	while (len < sizeof(rand_bytes)) {
+		ssize_t ret = getrandom(rand_bytes + len,
+			sizeof(rand_bytes) - len, 0);
+		if (ret < 0) {
+			if (errno == EINTR) {
+				continue;
 			}
+			wlr_log_errno(WLR_ERROR, "getrandom() failed, zone has no handle");
+			return NULL;
 		}
-		fclose(f);
-	} else {
-		for (int i = 0; i < 16; i++) {
-			rand_bytes[i] = (uint8_t)rand();
-		}
+		len += ret;
 	}
 	snprintf(token, sizeof(token),
 		"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
