@@ -39,7 +39,7 @@ export WLR_HEADLESS_OUTPUTS=1
 export XDG_RUNTIME_DIR="$(mktemp -d /tmp/wex-run-blur-XXXXXX)"
 chmod 700 "$XDG_RUNTIME_DIR"
 export WAYLAND_DISPLAY="wayland-0"
-export LABWC_WEX_SHELL_SOCKET="wex-shell-0"
+export WEX_SHELL_SOCKET="wex-shell-0"
 
 CONFIG_DIR="$XDG_RUNTIME_DIR/labwc-cfg"
 mkdir -p "$CONFIG_DIR"
