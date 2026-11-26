@@ -765,7 +765,10 @@ reconfigure_commit(struct wex_scene *scene)
 	/* An xdg configure is a request: the native client answers with a size of its own choosing (a terminal snaps to its
 	 * cell grid, many toolkits to increments) and xdg-shell has no increment hints to predict it. Its committed size is
 	 * the answer. The client rectangle becomes that size and the frame is asked to follow it (at most twice), then both
-	 * roots publish together. Insisting on the exact size ended every such layout change in the transaction's timeout. */
+	 * roots publish together. Insisting on the exact size ended every such layout change in the transaction's timeout.
+	 * A larger answer than the request is accepted on purpose, within the 32768 sanity limit: a client that commits more
+	 * (its own minimum size) pushes the frame beyond what Wine asked for, and the frame follows, as a Windows window honours
+	 * WM_GETMINMAXINFO. The count of adjustments starts at 0 in every transaction (resize_begin allocates it zeroed). */
 	if (scene->native->current.width != client->width || scene->native->current.height != client->height) {
 		int width = scene->native->current.width, height = scene->native->current.height;
 		if (resize->adjustments >= 2 || width <= 0 || height <= 0 || width > 32768 || height > 32768) return;
