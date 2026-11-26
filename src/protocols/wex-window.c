@@ -2401,11 +2401,11 @@ manager_apply_peek(struct wex_window_manager *manager)
 	wl_list_for_each(view, &manager->server->views, link) {
 		manager_apply_peek_to_view(manager, view);
 	}
-	if (manager->server->active_view && manager->server->active_view->output) {
-		wlr_output_schedule_frame(manager->server->active_view->output->wlr_output);
-	} else if (!wl_list_empty(&manager->server->outputs)) {
-		struct output *out = wl_container_of(manager->server->outputs.next, out, link);
-		if (out && out->wlr_output) {
+	/* Peek hides or shows views on any output, so each output draws it: not only the active view's, and not the
+	 * newest output as a fallback (the output list has the newest first) */
+	struct output *out;
+	wl_list_for_each(out, &manager->server->outputs, link) {
+		if (out->wlr_output) {
 			wlr_output_schedule_frame(out->wlr_output);
 		}
 	}
