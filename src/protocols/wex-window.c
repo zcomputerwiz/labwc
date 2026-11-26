@@ -123,6 +123,7 @@ wex_window_drop_scene(struct wex_window *frame)
 	struct wex_scene *scene = frame->scene;
 	if (!scene) return;
 	frame->scene = NULL;
+	frame->group_dropped = true;
 	wex_scene_destroy(scene);
 	wex_window_send_foreign_focus(frame);
 	if (frame->view) wex_window_v1_send_foreign_group(frame->resource,
@@ -811,6 +812,7 @@ handle_wex_window_commit_foreign(struct wl_client *client, struct wl_resource *r
 	if (frame->foreign && frame->foreign->view && !frame->scene) {
 		frame->scene = wex_scene_create(frame, frame->foreign->view, &rect);
 		if (frame->scene) {
+			frame->group_dropped = false;
 			wex_scene_view_moved(frame->view);
 			wex_foreign_window_update(frame->foreign->view);
 		}
@@ -859,7 +861,21 @@ handle_wex_window_configure_foreign(struct wl_client *client, struct wl_resource
 	struct wex_window *frame = wl_resource_get_user_data(resource);
 	struct wlr_box rect = {x, y, width, height};
 	if (wex_scene_reconfigure(frame, serial, &rect)) return;
-	handle_wex_window_commit_foreign(client, resource, x, y, width, height);
+	/* Re-adoption of a group that was dropped (a transaction timeout, or the native client re-snapping its own size):
+	 * the frame's placement is authoritative. Compose the pair at the size the native client has now, which puts the
+	 * native view at the frame's client origin (it was left wherever the scale change put it), then let the layout
+	 * transaction take it to the requested size; that transaction sends the answer. Before, only an exact match could
+	 * re-form the group (not_ready otherwise, without moving anything), and the frame then followed the native window. */
+	struct view *native = frame->foreign ? frame->foreign->view : NULL;
+	if (!frame->scene && frame->group_dropped && native && native->current.width > 0 && native->current.height > 0) {
+		handle_wex_window_commit_foreign(client, resource, x, y, native->current.width, native->current.height);
+		if (frame->scene) {
+			frame->group_dropped = false;
+			if (wex_scene_reconfigure(frame, serial, &rect)) return;
+		}
+	} else {
+		handle_wex_window_commit_foreign(client, resource, x, y, width, height);
+	}
 	wex_window_v1_send_configured_foreign(resource, serial,
 		frame->scene && wex_scene_matches(frame->scene, &rect) ?
 		WEX_WINDOW_V1_GROUP_STATUS_ACTIVE : WEX_WINDOW_V1_GROUP_STATUS_NOT_READY);

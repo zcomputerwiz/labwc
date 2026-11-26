@@ -53,6 +53,7 @@ struct wex_window {
 	struct wl_resource *resource;
 	struct wex_foreign_window *foreign;
 	struct wex_scene *scene;
+	bool group_dropped;   /* a group existed and was dropped; the next configure_foreign re-adopts the native view */
 	char handle[33];
 	uint32_t layer;
 	uint32_t exclusive_edge;
