@@ -89,6 +89,7 @@
       <entry name="dark" value="2" summary="dark default tint"/>
       <entry name="tint" value="4" summary="the tint argument replaces the default tint"/>
       <entry name="region" value="8" summary="the backdrop covers the given region only"/>
+      <entry name="class_shadow" value="16" summary="the shadow of a CS_DROPSHADOW window class (XP's: 8 px to the right and below, fading out); a compositor that does not know the bit draws none"/>
     </enum>
     <request name="set_effects" since="13">
       <description summary="set the DWM effects of a window by shared handle">
