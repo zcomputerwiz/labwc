@@ -387,8 +387,23 @@ wex_scene_destroy(struct wex_scene *scene)
 	struct view *native = scene->native;
 	struct wlr_scene_tree *parent = scene->restore_parent;
 	if (!parent) parent = native->server->workspaces.current->tree;
+	/* While grouped the native view sits under the frame, at the frame's client origin; the view's own x and y keep the
+	 * place it had before the group (another scale's logical coordinates after an output scale change). Leave the native
+	 * window where the user sees it, so a re-adoption and the frame that follows the native client start from there. */
+	int lx = native->current.x, ly = native->current.y;
+	if (wlr_scene_node_coords(&native->scene_tree->node, &lx, &ly) && native->mapped) {
+		int px = 0, py = 0;
+		wlr_scene_node_coords(&parent->node, &px, &py);
+		native->current.x = native->pending.x = lx;
+		native->current.y = native->pending.y = ly;
+		lx -= px;
+		ly -= py;
+	} else {
+		lx = native->current.x;
+		ly = native->current.y;
+	}
 	wlr_scene_node_reparent(&native->scene_tree->node, parent);
-	wlr_scene_node_set_position(&native->scene_tree->node, native->current.x, native->current.y);
+	wlr_scene_node_set_position(&native->scene_tree->node, lx, ly);
 	if (scene->restore_parent) wl_list_remove(&scene->parent_destroy.link);
 	wl_list_remove(&scene->commit.link);
 	if (scene->native_frame_done.notify) wl_list_remove(&scene->native_frame_done.link);
