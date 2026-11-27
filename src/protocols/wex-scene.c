@@ -37,6 +37,8 @@ struct resize_transaction {
 	int extent_tolerance;
 	struct wlr_box original, requested, actual;
 	int frame_width, frame_height;
+	int frame_right, frame_bottom;   /* the frame's extent right of and below the client (automatic transactions) */
+	unsigned adjustments;            /* the client size taken over from the native client's own commit */
 	int frame_x, frame_y, frame_content_x, frame_content_y;
 	int native_content_x, native_content_y;
 	int native_x, native_y;
@@ -759,8 +761,33 @@ reconfigure_commit(struct wex_scene *scene)
 	struct resize_transaction *resize = scene->resize;
 	struct wlr_surface *surface = scene->frame->view->surface;
 	struct wlr_box *client = &resize->client;
-	if (!resize->ready || !resize->frame_seen || !surface->buffer ||
-			abs(surface->current.width - resize->frame_width) > resize->extent_tolerance ||
+	if (!resize->ready || !resize->frame_seen || !surface->buffer) return;
+	/* An xdg configure is a request: the native client answers with a size of its own choosing (a terminal snaps to its
+	 * cell grid, many toolkits to increments) and xdg-shell has no increment hints to predict it. Its committed size is
+	 * the answer. The client rectangle becomes that size and the frame is asked to follow it (at most twice), then both
+	 * roots publish together. Insisting on the exact size ended every such layout change in the transaction's timeout.
+	 * A larger answer than the request is accepted on purpose, within the 32768 sanity limit: a client that commits more
+	 * (its own minimum size) pushes the frame beyond what Wine asked for, and the frame follows, as a Windows window honours
+	 * WM_GETMINMAXINFO. The count of adjustments starts at 0 in every transaction (resize_begin allocates it zeroed). */
+	if (scene->native->current.width != client->width || scene->native->current.height != client->height) {
+		int width = scene->native->current.width, height = scene->native->current.height;
+		if (resize->adjustments >= 2 || width <= 0 || height <= 0 || width > 32768 || height > 32768) return;
+		client->width = resize->requested.width = width;
+		client->height = resize->requested.height = height;
+		resize->frame_width = client->x + client->width + resize->frame_right;
+		resize->frame_height = client->y + client->height + resize->frame_bottom;
+		resize->adjustments++;
+		if (abs(surface->current.width - resize->frame_width) > resize->extent_tolerance ||
+				abs(surface->current.height - resize->frame_height) > resize->extent_tolerance) {
+			/* the frame has to change size: wait for its next commit at the new size */
+			resize->frame_seen = false;
+			wlr_xdg_toplevel_set_size(xdg_surface_from_view(scene->frame->view)->toplevel,
+				resize->frame_width, resize->frame_height);
+			if (scene->frame->view->output) wlr_output_schedule_frame(scene->frame->view->output->wlr_output);
+			return;
+		}
+	}
+	if (abs(surface->current.width - resize->frame_width) > resize->extent_tolerance ||
 			abs(surface->current.height - resize->frame_height) > resize->extent_tolerance ||
 			client->width > surface->current.width - client->x ||
 			client->height > surface->current.height - client->y ||
@@ -795,8 +822,10 @@ wex_scene_reconfigure(struct wex_window *frame, uint32_t serial, const struct wl
 	resize->group_serial = serial;
 	resize->client = *client;
 	resize->extent_tolerance = scale != scene->scale || scale != (int)scale ? 1 : 0;
-	resize->frame_width = client->x + client->width + round(right * ratio);
-	resize->frame_height = client->y + client->height + round(bottom * ratio);
+	resize->frame_right = round(right * ratio);
+	resize->frame_bottom = round(bottom * ratio);
+	resize->frame_width = client->x + client->width + resize->frame_right;
+	resize->frame_height = client->y + client->height + resize->frame_bottom;
 	/* A maximized frame still needs an xdg configure in the new logical
 	 * coordinate space. Otherwise Wine correctly refuses to commit a buffer
 	 * smaller than the old maximized configure, so neither root can publish. */
