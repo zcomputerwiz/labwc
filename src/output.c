@@ -216,6 +216,37 @@ output_frame_notify(struct wl_listener *listener, void *data)
 	}
 }
 
+/*
+ * The output whose commits and presents pace the shell's frame clock (DwmFlush): the primary one. Wine's primary
+ * monitor is the one at the origin of the layout, so that is the output containing (0,0); without one (a layout
+ * that does not cover the origin) the leftmost, then topmost enabled output. The server's output list is no guide:
+ * wl_list_insert puts the newest output first, so "the first output" was the one plugged in last.
+ */
+static struct output *
+output_clock_source(struct server *server)
+{
+	struct output *output, *best = NULL;
+	struct wlr_box box, best_box = { 0 };
+
+	wl_list_for_each(output, &server->outputs, link) {
+		if (!output->wlr_output->enabled) {
+			continue;
+		}
+		wlr_output_layout_get_box(server->output_layout, output->wlr_output, &box);
+		if (wlr_box_empty(&box)) {
+			continue;
+		}
+		if (box.x <= 0 && box.y <= 0 && box.x + box.width > 0 && box.y + box.height > 0) {
+			return output;
+		}
+		if (!best || box.x < best_box.x || (box.x == best_box.x && box.y < best_box.y)) {
+			best = output;
+			best_box = box;
+		}
+	}
+	return best;
+}
+
 static void
 output_commit_notify(struct wl_listener *listener, void *data)
 {
@@ -225,8 +256,7 @@ output_commit_notify(struct wl_listener *listener, void *data)
 		return;
 	}
 	/* once presents are reported the frame events follow them (display time), see output_present_notify */
-	if (!output->present_seen && !wl_list_empty(&server->outputs) &&
-			output == wl_container_of(server->outputs.next, output, link)) {
+	if (!output->present_seen && output == output_clock_source(server)) {
 		clock_gettime(CLOCK_MONOTONIC, &output->last_presentation);
 		wex_window_manager_on_output_commit(server->wex_window_manager, NULL);
 	}
@@ -246,8 +276,7 @@ output_present_notify(struct wl_listener *listener, void *data)
 		output->last_presentation = *event->when;
 	}
 	output->refresh_nsec = event->refresh;
-	if (!wl_list_empty(&server->outputs) &&
-			output == wl_container_of(server->outputs.next, output, link)) {
+	if (output == output_clock_source(server)) {
 		wex_window_manager_on_output_commit(server->wex_window_manager, event->when);
 	}
 }
