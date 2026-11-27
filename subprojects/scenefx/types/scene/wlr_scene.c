@@ -2047,7 +2047,8 @@ static bool scene_node_invisible(struct wlr_scene_node *node) {
 	} else if (node->type == WLR_SCENE_NODE_RECT) {
 		struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
 
-		return rect->color[3] == 0.f;
+		/* A clear rect with a backdrop blur still draws the blur (a blur behind without a tint). */
+		return rect->color[3] == 0.f && !rect->backdrop_blur;
 	} else if (node->type == WLR_SCENE_NODE_SHADOW) {
 		struct wlr_scene_shadow *shadow = wlr_scene_shadow_from_node(node);
 

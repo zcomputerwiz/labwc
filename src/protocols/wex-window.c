@@ -1306,23 +1306,14 @@ compute_backdrop_color(uint32_t backdrop, uint32_t flags, uint32_t tint, float c
 			}
 			break;
 		case WEX_WINDOW_MANAGER_V1_BACKDROP_BLUR:
-			if (dark) {
-				r = g = b = 0x20 / 255.0f;
-				a = 0.25f;
-			} else {
-				r = g = b = 1.0f;
-				a = 0.25f;
-			}
-			break;
 		case WEX_WINDOW_MANAGER_V1_BACKDROP_GRADIENT:
 		default:
-			if (dark) {
-				r = g = b = 0x20 / 255.0f;
-				a = 1.0f;
-			} else {
-				r = g = b = 0xF3 / 255.0f;
-				a = 1.0f;
-			}
+			/* As on Windows: blur behind (DwmEnableBlurBehindWindow) and an accent gradient without a colour draw
+			 * no tint of their own; an app that wants one sends it (EFFECT_FLAGS_TINT). The X11 compositor does
+			 * the same. The Mica and Acrylic values above match the shell's table (wexmaterials.h), which sends
+			 * them as a tint; they stay here for clients that do not. */
+			r = g = b = 0.0f;
+			a = 0.0f;
 			break;
 		}
 	}
