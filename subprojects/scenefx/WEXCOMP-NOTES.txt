@@ -1,1 +1,2 @@
 Vendored SceneFX 0.3 without examples/tinywl; applied 0001-fx_renderer-surfaceless-egl.patch; exported scenefx_dep.
+types/scene/wlr_scene.c, scene_node_invisible (wexcomp claude/material-defaults, 2026-11-27): a rect with a backdrop blur stays in the render list when its colour's alpha is 0. Upstream drops every zero-alpha rect, its backdrop blur included, so an untinted blur behind (Blur and Gradient have no default tint, as on Windows) vanished.
