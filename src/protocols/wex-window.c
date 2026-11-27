@@ -1654,6 +1654,31 @@ wex_window_update_effects(struct wex_window *win)
 		}
 	}
 
+	/* 3b. The shadow of a CS_DROPSHADOW class, drawn as the X11 compositor draws it (wexhost compose.c, paint_shadow):
+	 * six nested translucent black rectangles, from the window's own corner, 8 px wider and taller than the window,
+	 * the outermost faintest. Only the strip right of and below the window shows (the window covers the rest). */
+	if ((win->effects_flags & WEX_WINDOW_MANAGER_V1_EFFECT_FLAGS_CLASS_SHADOW) && has_buffer) {
+		if (!win->shadow_tree) {
+			win->shadow_tree = wlr_scene_tree_create(win->view->scene_tree);
+			if (win->shadow_tree) {
+				wlr_scene_node_set_position(&win->shadow_tree->node, -geometry.x, -geometry.y);
+			}
+		}
+		for (int i = 0; win->shadow_tree && i < 6; i++) {
+			int sw = width + 8 - 2 * i;
+			int sh = height + 8 - 2 * i;
+			if (sw <= 0 || sh <= 0) {
+				break;
+			}
+			/* the X11 layers' alpha, (600 + 650 i) / 65535 each, composed over each other */
+			float layer_color[4] = { 0.f, 0.f, 0.f, (600 + 650 * i) / 65535.f };
+			struct wlr_scene_rect *rect = wlr_scene_rect_create(win->shadow_tree, sw, sh, layer_color);
+			if (rect) {
+				wlr_scene_node_set_position(&rect->node, i, i);
+			}
+		}
+	}
+
 	window_restack_decorations(win);
 
 	mica_blur_release_if_unused(win->manager);
