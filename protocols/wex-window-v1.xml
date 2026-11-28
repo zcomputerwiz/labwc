@@ -101,7 +101,11 @@
 
         corner_radius is clamped to 0..32 like wex_window_v1.set_corner_radius
         (which stays, for a window's owner). tint is straight (non-premultiplied)
-        0xAARRGGBB, used when the tint flag is set. region is in window
+        0xAARRGGBB, used when the tint flag is set; without the tint flag the
+        compositor uses the default tint of the shared table for that material
+        (wex_material_default_tint in the shell's wexhost.h: Mica and Acrylic have
+        one, light and dark; blur and gradient have none), so an explicit tint with
+        alpha 0 is the material without tint. region is in window
         logical coordinates (left, top, right, bottom) and used when the region
         flag is set. The backdrop is drawn behind the window's own pixels, so
         it shows through only where the window is translucent. Without
