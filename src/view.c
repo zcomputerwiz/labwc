@@ -1868,8 +1868,13 @@ view_adjust_for_layout_change(struct view *view)
 	 * that policy; independent maximize placement would break the retained
 	 * group before the new frame/client transaction can be committed. */
 	struct wex_window *frame = view->wex_window;
-	if ((view->wex_window && (view->wex_layer == WEX_WINDOW_V1_LAYER_DESKTOP ||
-			view->wex_layer == WEX_WINDOW_V1_LAYER_SHELL)) ||
+	/* Every Wine window is placed by Wine, through the shared zone; the shell owns its placement across an output scale
+	 * change (wex_scale_changed in the shell), converting the physical rectangle by the scale ratio around the top left
+	 * (docs/WAYLAND_DEFAULT.md). A native view reserved by a frame is placed by it as well, whether or not its group
+	 * exists at the moment (a layout change drops the group first). Stock labwc, as the layout shrinks or grows, moves
+	 * floating views in proportion to the layout, a second writer of placement that put plain Wine windows at 1.5 or
+	 * 2/3 of their place after a change. */
+	if (view->wex_window || view->wex_foreign_frame ||
             (frame && frame->scene && wex_scene_server_decorated(frame->scene)) ||
             (view->wex_foreign_frame && view->wex_foreign_frame->scene &&
              wex_scene_server_decorated(view->wex_foreign_frame->scene))) {

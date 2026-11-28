@@ -62,6 +62,7 @@ struct wex_scene {
 	enum ssd_mode restore_decor;
 	bool state_sync;
 	float scale;
+	int frame_width, frame_height;   /* the last frame size that matched the client box (apply_ring) */
 	struct resize_transaction *resize;
 };
 
@@ -188,6 +189,8 @@ apply_ring(struct wex_scene *scene)
 	}
 	struct wlr_box client = scene->client;
 	int width = surface->current.width, height = surface->current.height;
+	scene->frame_width = width;    /* the frame's size that matches the client box, at scene->scale */
+	scene->frame_height = height;
 	wlr_scene_node_set_enabled(&scene->root.buffer->node, false);
 	crop_piece(scene, 0, (struct wlr_box){0, 0, width, client.y});
 	crop_piece(scene, 1, (struct wlr_box){0, client.y, client.x, client.height});
@@ -215,6 +218,17 @@ frame_committed(struct wl_listener *listener, void *data)
 		resize_hold(scene);
 		if (scene->frame->view->output)
 			wlr_output_schedule_frame(scene->frame->view->output->wlr_output);
+		return;
+	}
+	if (surface->buffer && scene->frame->view->output &&
+			scene->frame->view->output->wlr_output->scale != scene->scale) {
+		/* An output scale change in progress: the frame's buffers at the new scale keep the old physical size until
+		 * the shell converts the placement (wexshell's wex_scale_changed), smaller or larger than the client box in
+		 * logical units. Keep the group and the ring as they are (and the frame size they match, the transaction's
+		 * margins come from it); Wine's layout request for the new scale follows and runs the transaction. */
+		wlr_log(WLR_DEBUG, "Hosted group kept across a scale change: frame %dx%d client %d,%d %dx%d",
+			surface->current.width, surface->current.height, scene->client.x, scene->client.y,
+			scene->client.width, scene->client.height);
 		return;
 	}
 	if (!surface->buffer || scene->client.width > surface->current.width - scene->client.x
@@ -280,6 +294,18 @@ native_committed(struct wl_listener *listener, void *data)
 		resize_native_committed(scene);
 		resize_hold(scene);
 		if (native->output) wlr_output_schedule_frame(native->output->wlr_output);
+		return;
+	}
+	/* An output scale change in progress: the native client commits at the new scale with a size of its own before
+	 * Wine's layout request for that scale arrives (the shell converts the frame first). Keep the group; the request
+	 * runs the layout transaction (wex_scene_reconfigure), which takes the size the client chooses. Dropping it here
+	 * left the native at the other scale's logical place, and the re-adoption cannot move it. */
+	float output_scale = scene->frame->view->output ? scene->frame->view->output->wlr_output->scale : 1;
+	if (native->surface->buffer && output_scale != scene->scale &&
+			view_get_ssd_mode(native) == LAB_SSD_MODE_NONE &&
+			!(native->ssd_preference == LAB_SSD_PREF_CLIENT && scene->restore_decor != LAB_SSD_MODE_NONE)) {
+		wlr_log(WLR_DEBUG, "Hosted group kept across a scale change: native %dx%d client %dx%d",
+			native->current.width, native->current.height, scene->client.width, scene->client.height);
 		return;
 	}
 	if (!native->surface->buffer || native->current.width != scene->client.width ||
@@ -387,8 +413,23 @@ wex_scene_destroy(struct wex_scene *scene)
 	struct view *native = scene->native;
 	struct wlr_scene_tree *parent = scene->restore_parent;
 	if (!parent) parent = native->server->workspaces.current->tree;
+	/* While grouped the native view sits under the frame, at the frame's client origin; the view's own x and y keep the
+	 * place it had before the group (another scale's logical coordinates after an output scale change). Leave the native
+	 * window where the user sees it, so a re-adoption and the frame that follows the native client start from there. */
+	int lx = native->current.x, ly = native->current.y;
+	if (wlr_scene_node_coords(&native->scene_tree->node, &lx, &ly) && native->mapped) {
+		int px = 0, py = 0;
+		wlr_scene_node_coords(&parent->node, &px, &py);
+		native->current.x = native->pending.x = lx;
+		native->current.y = native->pending.y = ly;
+		lx -= px;
+		ly -= py;
+	} else {
+		lx = native->current.x;
+		ly = native->current.y;
+	}
 	wlr_scene_node_reparent(&native->scene_tree->node, parent);
-	wlr_scene_node_set_position(&native->scene_tree->node, native->current.x, native->current.y);
+	wlr_scene_node_set_position(&native->scene_tree->node, lx, ly);
 	if (scene->restore_parent) wl_list_remove(&scene->parent_destroy.link);
 	wl_list_remove(&scene->commit.link);
 	if (scene->native_frame_done.notify) wl_list_remove(&scene->native_frame_done.link);
@@ -816,8 +857,13 @@ wex_scene_reconfigure(struct wex_window *frame, uint32_t serial, const struct wl
 	if (!resize) return false;
 	float scale = frame->view->output ? frame->view->output->wlr_output->scale : 1;
 	double ratio = scene->scale / scale;
-	int right = resize->frame_width - scene->client.x - scene->client.width;
-	int bottom = resize->frame_height - scene->client.y - scene->client.height;
+	/* The frame's margins at the scene's scale, from the last frame size that matched the client box: during an
+	 * output scale change the frame's current buffer can be a transitional one (the old physical size at the new
+	 * scale, before the shell converts the placement), and margins taken from it come out negative. */
+	int frame_width = scene->frame_width ? scene->frame_width : resize->frame_width;
+	int frame_height = scene->frame_height ? scene->frame_height : resize->frame_height;
+	int right = frame_width - scene->client.x - scene->client.width;
+	int bottom = frame_height - scene->client.y - scene->client.height;
 	resize->automatic = true;
 	resize->group_serial = serial;
 	resize->client = *client;
