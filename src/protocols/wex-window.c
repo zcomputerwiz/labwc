@@ -1270,6 +1270,30 @@ compute_corner_slices(int width, int height, int r, struct wlr_box slices[65])
 	return count;
 }
 
+/* A shadow layer of the renderer-less fallbacks: the rectangle (x, y, w, h) minus the window's own box (0, 0, ww, wh),
+ * as up to four strips. A whole rectangle would darken whatever shows through a translucent window (Mica, Acrylic,
+ * glass), where the SceneFX shadow and the X11 compositor's are clipped to outside the window. */
+static void
+shadow_layer_outside(struct wlr_scene_tree *parent, const float color[4], int x, int y, int w, int h, int ww, int wh)
+{
+	int x1 = x + w, y1 = y + h;
+	struct wlr_box strips[4] = {
+		{ x, y, w, 0 - y },                                      /* above the window */
+		{ x, wh, w, y1 - wh },                                   /* below */
+		{ x, y > 0 ? y : 0, 0 - x, (y1 < wh ? y1 : wh) - (y > 0 ? y : 0) },  /* left of it */
+		{ ww, y > 0 ? y : 0, x1 - ww, (y1 < wh ? y1 : wh) - (y > 0 ? y : 0) },  /* right of it */
+	};
+	for (int i = 0; i < 4; i++) {
+		if (strips[i].width <= 0 || strips[i].height <= 0) {
+			continue;
+		}
+		struct wlr_scene_rect *rect = wlr_scene_rect_create(parent, strips[i].width, strips[i].height, color);
+		if (rect) {
+			wlr_scene_node_set_position(&rect->node, strips[i].x, strips[i].y);
+		}
+	}
+}
+
 static void
 compute_backdrop_color(uint32_t backdrop, uint32_t flags, uint32_t tint, float color[4])
 {
@@ -1633,13 +1657,8 @@ wex_window_update_effects(struct wex_window *win)
 
 				for (int i = 0; i < 6; i++) {
 					int s = shadow_spreads[i];
-					int sw = width + 2 * s;
-					int sh = height + 2 * s;
-					struct wlr_scene_rect *rect = wlr_scene_rect_create(
-						win->shadow_tree, sw, sh, shadow_color);
-					if (rect) {
-						wlr_scene_node_set_position(&rect->node, -s, -s + 2);
-					}
+					shadow_layer_outside(win->shadow_tree, shadow_color, -s, -s + 2,
+						width + 2 * s, height + 2 * s, width, height);
 				}
 			}
 		}
@@ -1663,10 +1682,7 @@ wex_window_update_effects(struct wex_window *win)
 			}
 			/* the X11 layers' alpha, (600 + 650 i) / 65535 each, composed over each other */
 			float layer_color[4] = { 0.f, 0.f, 0.f, (600 + 650 * i) / 65535.f };
-			struct wlr_scene_rect *rect = wlr_scene_rect_create(win->shadow_tree, sw, sh, layer_color);
-			if (rect) {
-				wlr_scene_node_set_position(&rect->node, i, i);
-			}
+			shadow_layer_outside(win->shadow_tree, layer_color, i, i, sw, sh, width, height);
 		}
 	}
 
